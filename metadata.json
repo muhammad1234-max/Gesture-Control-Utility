@@ -1,0 +1,6 @@
+{
+  "name": "Gesture Control Command Center V2",
+  "description": "Production-grade control console for Windows gesture recognition, keyboard shortcut mapping, skeletal webcam tracking, and sensitivity calibration.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
