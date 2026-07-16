@@ -16,9 +16,18 @@
     "allowJs": true,
     "jsx": "react-jsx",
     "paths": {
-      "@/*": [
-        "./*"
-      ]
+      "@shared/*": ["./shared/*"],
+      "@components/*": ["./src/components/*"],
+      "@views/*": ["./src/views/*"],
+      "@layouts/*": ["./src/layouts/*"],
+      "@hooks/*": ["./src/hooks/*"],
+      "@stores/*": ["./src/stores/*"],
+      "@services/*": ["./src/services/*"],
+      "@ipc/*": ["./src/ipc/*"],
+      "@utils/*": ["./src/utils/*"],
+      "@animations/*": ["./src/animations/*"],
+      "@assets/*": ["./src/assets/*"],
+      "@backend/*": ["./backend/*"]
     },
     "allowImportingTsExtensions": true,
     "noEmit": true

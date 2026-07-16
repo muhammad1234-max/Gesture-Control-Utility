@@ -1,0 +1,5 @@
+export const SYSTEM_CONSTANTS = {
+  DEFAULT_FPS: 60,
+  MAX_LOG_HISTORY: 150,
+  WS_PORT: 3000,
+};
