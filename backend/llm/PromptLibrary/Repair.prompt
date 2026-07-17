@@ -1,0 +1,8 @@
+The previous workflow failed during execution.
+Error at node: {{FAILED_NODE_ID}}
+Reason: {{FAILURE_REASON}}
+
+Current Context:
+{{CURRENT_CONTEXT}}
+
+Propose a modification to the DAG to bypass this failure or achieve the goal using an alternative skill.
