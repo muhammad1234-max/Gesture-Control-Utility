@@ -261,6 +261,12 @@ ipcMain.handle('STOP_TRACKING', () => sendDaemonCommand('STOP_TRACKING'));
 ipcMain.handle('CONFIG', (_event, value) => sendDaemonCommand('CONFIG', value));
 ipcMain.handle('CALIBRATION_MODE', (_event, value) => sendDaemonCommand('CALIBRATION_MODE', value));
 
+// Benchmark tools
+ipcMain.handle('START_RECORDING', () => sendDaemonCommand('START_RECORDING'));
+ipcMain.handle('STOP_RECORDING', () => sendDaemonCommand('STOP_RECORDING'));
+ipcMain.handle('START_REPLAY', () => sendDaemonCommand('START_REPLAY'));
+ipcMain.handle('STOP_REPLAY', () => sendDaemonCommand('STOP_REPLAY'));
+
 ipcMain.handle('GET_STATUS', () => {
   if (!daemonProcess) {
     if (mainWindow) {

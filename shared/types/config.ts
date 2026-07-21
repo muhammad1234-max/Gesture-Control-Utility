@@ -29,6 +29,12 @@ export interface AppConfig {
   adaptive: {
     mode: AdaptiveMode;
     overrides: AdaptiveOverrides;
+    engineParams?: {
+      deadzone_px: number;
+      mincutoff: number;
+      beta: number;
+      dcutoff: number;
+    };
   };
   calibration: {
     workingArea: {
@@ -70,7 +76,13 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   adaptive: {
     mode: 'assisted',
-    overrides: {}
+    overrides: {},
+    engineParams: {
+      deadzone_px: 2.5,
+      mincutoff: 0.5,
+      beta: 0.1,
+      dcutoff: 2.0
+    }
   },
   calibration: {
     workingArea: {

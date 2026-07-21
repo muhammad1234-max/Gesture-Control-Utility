@@ -6,6 +6,7 @@ import { IPCEventType } from '@shared/events';
 import { ToggleSwitch } from '@components/ToggleSwitch';
 import { SettingsSlider } from '@components/SettingsSlider';
 import { EngineController, CameraController, TrackingController, ConfigurationController } from '@controllers';
+import { DeveloperPanel } from '@components/DeveloperPanel';
 
 export default function SettingsView() {
   const config = useAppStore(state => state.config);
@@ -51,7 +52,7 @@ export default function SettingsView() {
   };
 
   const smoothing = config?.adaptive?.overrides?.smoothing ?? 0.3;
-  const cameraId = config?.cameraId ?? 0;
+  const cameraId = config?.camera?.deviceId ?? '0';
 
   return (
     <div className="space-y-6 animate-[var(--animate-native-fade)] pb-12">
@@ -73,12 +74,12 @@ export default function SettingsView() {
               <label className="text-sm font-medium text-white">Video Source</label>
               <select 
                 value={cameraId}
-                onChange={e => ConfigurationController.apply({ cameraId: parseInt(e.target.value) })}
+                onChange={e => ConfigurationController.apply({ camera: { ...config?.camera, deviceId: e.target.value } as any })}
                 className="w-full bg-[#111] border border-[var(--color-border)] text-white text-sm rounded-lg p-2.5 focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]/50 transition-all"
               >
-                <option value={0}>Camera 0 (Default / Integrated)</option>
-                <option value={1}>Camera 1 (External / OBS Virtual)</option>
-                <option value={2}>Camera 2</option>
+                <option value="0">Camera 0 (Default / Integrated)</option>
+                <option value="1">Camera 1 (External / OBS Virtual)</option>
+                <option value="2">Camera 2</option>
               </select>
               <p className="text-caption pt-1">Note: Restart the tracking engine for camera changes to take effect.</p>
             </div>
@@ -145,12 +146,7 @@ export default function SettingsView() {
             </div>
 
             {devMode && (
-              <div className="mt-4 p-4 bg-black/40 rounded-xl border border-rose-500/20 font-mono text-xs text-rose-200/70 space-y-2">
-                <p>{'>'} Engine Hook: Win32 User32.dll [ACTIVE]</p>
-                <p>{'>'} IPC Transport: Stdio JSON [ACTIVE]</p>
-                <p>{'>'} Current Config State:</p>
-                <pre className="text-[var(--color-text-secondary)] pl-4">{JSON.stringify(config, null, 2)}</pre>
-              </div>
+              <DeveloperPanel />
             )}
           </div>
         </section>
