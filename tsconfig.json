@@ -23,6 +23,7 @@
       "@hooks/*": ["./src/hooks/*"],
       "@stores/*": ["./src/stores/*"],
       "@services/*": ["./src/services/*"],
+      "@controllers/*": ["./src/controllers/*"],
       "@ipc/*": ["./src/ipc/*"],
       "@utils/*": ["./src/utils/*"],
       "@animations/*": ["./src/animations/*"],

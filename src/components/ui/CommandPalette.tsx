@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Search, Settings, LayoutDashboard, Sliders, Play, Square } from 'lucide-react';
 import { useAppStore } from '@stores/appStore';
 import { useTelemetryStore } from '@stores/telemetryStore';
+import { EngineController } from '@controllers';
 
 export default function CommandPalette() {
   const [isOpen, setIsOpen] = useState(false);
@@ -28,9 +29,9 @@ export default function CommandPalette() {
 
   const actions = [
     { id: 'go-dashboard', label: 'Go to Dashboard', icon: LayoutDashboard, onSelect: () => setActiveTab('dashboard') },
-    { id: 'go-settings', label: 'Open Settings', icon: Settings, onSelect: () => setActiveTab('profiles') },
-    { id: 'go-calibration', label: 'Start Calibration', icon: Sliders, onSelect: () => setActiveTab('calibration') },
-    { id: 'toggle-engine', label: engineActive ? 'Stop Tracking Engine' : 'Start Tracking Engine', icon: engineActive ? Square : Play, onSelect: () => setEngineActive(!engineActive) },
+    { id: 'go-gestures', label: 'Open Gestures', icon: Sliders, onSelect: () => setActiveTab('gestures') },
+    { id: 'go-settings', label: 'Open Settings', icon: Settings, onSelect: () => setActiveTab('settings') },
+    { id: 'toggle-engine', label: engineActive ? 'Stop Tracking Engine' : 'Start Tracking Engine', icon: engineActive ? Square : Play, onSelect: () => engineActive ? EngineController.stop() : EngineController.start() },
   ];
 
   const filtered = actions.filter(a => a.label.toLowerCase().includes(query.toLowerCase()));

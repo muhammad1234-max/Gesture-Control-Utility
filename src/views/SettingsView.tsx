@@ -1,155 +1,222 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { Camera, MousePointer2, TerminalSquare, Power } from 'lucide-react';
 import { useAppStore } from '@stores/appStore';
-import { Settings, Monitor, Accessibility, Camera, UserCircle2 } from 'lucide-react';
+import { IPCClient } from '@ipc/client';
+import { IPCEventType } from '@shared/events';
+import { ToggleSwitch } from '@components/ToggleSwitch';
+import { SettingsSlider } from '@components/SettingsSlider';
+import { EngineController, CameraController, TrackingController, ConfigurationController } from '@controllers';
 
 export default function SettingsView() {
   const config = useAppStore(state => state.config);
-  const updateConfig = useAppStore(state => state.updateConfig);
-  const [activeCategory, setActiveCategory] = useState('general');
-  const [search, setSearch] = useState('');
+  const [devMode, setDevMode] = useState(false);
+  const [startWithWindows, setStartWithWindows] = useState(false);
+  const [minimizeToTray, setMinimizeToTray] = useState(true);
+  const [engineStatus, setEngineStatus] = useState<any>({ pid: null, camera_open: false, tracking: false });
 
-  const categories = [
-    { id: 'general', label: 'General', icon: Settings },
-    { id: 'appearance', label: 'Appearance', icon: Monitor },
-    { id: 'accessibility', label: 'Accessibility', icon: Accessibility },
-    { id: 'camera', label: 'Camera & Tracking', icon: Camera },
-    { id: 'profiles', label: 'Profiles', icon: UserCircle2 },
-  ];
+  useEffect(() => {
+    // Load OS-level settings on mount
+    IPCClient.storeGet('startWithWindows').then(val => {
+      if (val !== undefined) setStartWithWindows(val);
+    });
+    IPCClient.storeGet('minimizeToTray').then(val => {
+      if (val !== undefined) setMinimizeToTray(val);
+    });
+
+    const fetchStatus = () => IPCClient.invoke(IPCEventType.GET_STATUS);
+    
+    const unsub = IPCClient.subscribe((msg) => {
+      if (msg.type === 'ENGINE_STATUS' && msg.payload) {
+        setEngineStatus(msg.payload);
+      }
+    });
+
+    const interval = setInterval(fetchStatus, 2000);
+    fetchStatus();
+
+    return () => {
+      clearInterval(interval);
+      unsub();
+    };
+  }, []);
+
+  const handleToggleStart = (val: boolean) => {
+    setStartWithWindows(val);
+    IPCClient.storeSet('startWithWindows', val);
+  };
+
+  const handleToggleTray = (val: boolean) => {
+    setMinimizeToTray(val);
+    IPCClient.storeSet('minimizeToTray', val);
+  };
+
+  const smoothing = config?.adaptive?.overrides?.smoothing ?? 0.3;
+  const cameraId = config?.cameraId ?? 0;
 
   return (
-    <div className="flex h-[calc(100vh-120px)] bg-[#14171d] rounded-2xl border border-slate-800/60 overflow-hidden shadow-sm">
-      {/* Settings Sidebar */}
-      <div className="w-64 border-r border-slate-800/60 bg-slate-900/30 p-4 flex flex-col gap-2">
-        <div className="mb-4 px-2">
-          <input 
-            type="text" 
-            placeholder="Search settings..." 
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full bg-slate-800/50 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500/50"
-          />
-        </div>
-        
-        {categories.map(cat => {
-          const Icon = cat.icon;
-          const isActive = activeCategory === cat.id;
-          return (
-            <button
-              key={cat.id}
-              onClick={() => setActiveCategory(cat.id)}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
-                isActive ? 'bg-emerald-500/10 text-emerald-400' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
-              }`}
-            >
-              <Icon className="w-4 h-4" />
-              {cat.label}
-            </button>
-          );
-        })}
+    <div className="space-y-6 animate-[var(--animate-native-fade)] pb-12">
+      <div>
+        <h2 className="text-h1">Settings</h2>
+        <p className="text-body mt-1">Configure application behavior and preferences.</p>
       </div>
 
-      {/* Settings Content */}
-      <div className="flex-1 p-8 overflow-y-auto no-scrollbar">
-        <div className="max-w-2xl">
-          <h2 className="text-2xl font-semibold text-slate-100 mb-6 capitalize">{categories.find(c => c.id === activeCategory)?.label} Settings</h2>
-          
-          {activeCategory === 'general' && (
-            <div className="space-y-6">
-              <div className="bg-slate-800/30 border border-slate-700/50 rounded-xl p-5">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h4 className="text-sm font-medium text-slate-200">User Mode</h4>
-                    <p className="text-xs text-slate-500 mt-1">Adjust the complexity of the interface.</p>
-                  </div>
-                  <select 
-                    value={config.userMode}
-                    onChange={(e) => updateConfig({ userMode: e.target.value as any })}
-                    className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-200 outline-none focus:border-emerald-500/50"
-                  >
-                    <option value="beginner">Beginner</option>
-                    <option value="advanced">Advanced</option>
-                    <option value="developer">Developer</option>
-                  </select>
+      <div className="space-y-8">
+        
+        {/* Camera Section */}
+        <section className="space-y-4">
+          <div className="flex items-center gap-2 text-[var(--color-text-secondary)]">
+            <Camera className="w-4 h-4" />
+            <h3 className="text-sm font-semibold uppercase tracking-wider">Camera</h3>
+          </div>
+          <div className="card p-5">
+            <div className="space-y-3">
+              <label className="text-sm font-medium text-white">Video Source</label>
+              <select 
+                value={cameraId}
+                onChange={e => ConfigurationController.apply({ cameraId: parseInt(e.target.value) })}
+                className="w-full bg-[#111] border border-[var(--color-border)] text-white text-sm rounded-lg p-2.5 focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]/50 transition-all"
+              >
+                <option value={0}>Camera 0 (Default / Integrated)</option>
+                <option value={1}>Camera 1 (External / OBS Virtual)</option>
+                <option value={2}>Camera 2</option>
+              </select>
+              <p className="text-caption pt-1">Note: Restart the tracking engine for camera changes to take effect.</p>
+            </div>
+          </div>
+        </section>
+
+        {/* Performance Section */}
+        <section className="space-y-4">
+          <div className="flex items-center gap-2 text-[var(--color-text-secondary)]">
+            <MousePointer2 className="w-4 h-4" />
+            <h3 className="text-sm font-semibold uppercase tracking-wider">Performance</h3>
+          </div>
+          <div className="card p-5">
+            <SettingsSlider 
+              label="Cursor Smoothing"
+              description="Lower values reduce shaking but add slight delay to cursor movement."
+              value={smoothing}
+              min={0.05}
+              max={0.95}
+              step={0.05}
+              onChange={val => ConfigurationController.apply({ adaptive: { ...config?.adaptive, overrides: { ...config?.adaptive?.overrides, smoothing: val } } })}
+            />
+          </div>
+        </section>
+
+        {/* Startup Section */}
+        <section className="space-y-4">
+          <div className="flex items-center gap-2 text-[var(--color-text-secondary)]">
+            <Power className="w-4 h-4" />
+            <h3 className="text-sm font-semibold uppercase tracking-wider">Startup</h3>
+          </div>
+          <div className="card p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h4 className="text-[13px] font-medium text-white">Start with Windows</h4>
+                <p className="text-caption mt-0.5">Automatically launch Gesture Mouse when you log in.</p>
+              </div>
+              <ToggleSwitch checked={startWithWindows} onChange={handleToggleStart} />
+            </div>
+            <div className="h-px w-full bg-[var(--color-border)]" />
+            <div className="flex items-center justify-between">
+              <div>
+                <h4 className="text-[13px] font-medium text-white">Minimize to Tray</h4>
+                <p className="text-caption mt-0.5">Keep running in the background when the window is closed.</p>
+              </div>
+              <ToggleSwitch checked={minimizeToTray} onChange={handleToggleTray} />
+            </div>
+          </div>
+        </section>
+
+        {/* Advanced Section */}
+        <section className="space-y-4">
+          <div className="flex items-center gap-2 text-[var(--color-text-secondary)]">
+            <TerminalSquare className="w-4 h-4" />
+            <h3 className="text-sm font-semibold uppercase tracking-wider">Advanced</h3>
+          </div>
+          <div className="card p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h4 className="text-[13px] font-medium text-white">Developer Mode</h4>
+                <p className="text-caption mt-0.5">Enables raw telemetry logs and hardware diagnostics.</p>
+              </div>
+              <ToggleSwitch checked={devMode} onChange={setDevMode} />
+            </div>
+
+            {devMode && (
+              <div className="mt-4 p-4 bg-black/40 rounded-xl border border-rose-500/20 font-mono text-xs text-rose-200/70 space-y-2">
+                <p>{'>'} Engine Hook: Win32 User32.dll [ACTIVE]</p>
+                <p>{'>'} IPC Transport: Stdio JSON [ACTIVE]</p>
+                <p>{'>'} Current Config State:</p>
+                <pre className="text-[var(--color-text-secondary)] pl-4">{JSON.stringify(config, null, 2)}</pre>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* System Diagnostics & Control Section */}
+        <section className="space-y-4">
+          <div className="flex items-center gap-2 text-[var(--color-text-secondary)]">
+            <TerminalSquare className="w-4 h-4" />
+            <h3 className="text-sm font-semibold uppercase tracking-wider">System Control</h3>
+          </div>
+          <div className="card p-5 space-y-6">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <p className="text-xs text-[var(--color-text-secondary)] uppercase">Daemon Status</p>
+                <div className="flex items-center gap-2">
+                  <div className={`w-2 h-2 rounded-full ${engineStatus.pid ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                  <span className="text-sm text-white font-mono">{engineStatus.pid ? `PID: ${engineStatus.pid}` : 'Offline'}</span>
                 </div>
               </div>
-
-              <div className="bg-slate-800/30 border border-slate-700/50 rounded-xl p-5">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h4 className="text-sm font-medium text-slate-200">Launch on Startup</h4>
-                    <p className="text-xs text-slate-500 mt-1">Automatically start with Windows.</p>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input type="checkbox" className="sr-only peer" checked={config.startup?.autoStart || false} onChange={(e) => updateConfig({ startup: { ...config.startup, autoStart: e.target.checked } })} />
-                    <div className="w-11 h-6 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
-                  </label>
+              <div className="space-y-1">
+                <p className="text-xs text-[var(--color-text-secondary)] uppercase">Camera Status</p>
+                <div className="flex items-center gap-2">
+                  <div className={`w-2 h-2 rounded-full ${engineStatus.camera_open ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                  <span className="text-sm text-white">{engineStatus.camera_open ? 'Active' : 'Closed'}</span>
+                </div>
+              </div>
+              <div className="space-y-1">
+                <p className="text-xs text-[var(--color-text-secondary)] uppercase">Tracking Engine</p>
+                <div className="flex items-center gap-2">
+                  <div className={`w-2 h-2 rounded-full ${engineStatus.tracking ? 'bg-emerald-500' : 'bg-yellow-500'}`} />
+                  <span className="text-sm text-white">{engineStatus.tracking ? 'Tracking' : 'Paused'}</span>
                 </div>
               </div>
             </div>
-          )}
 
-          {activeCategory === 'appearance' && (
-            <div className="space-y-6">
-              <div className="bg-slate-800/30 border border-slate-700/50 rounded-xl p-5">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h4 className="text-sm font-medium text-slate-200">Theme</h4>
-                    <p className="text-xs text-slate-500 mt-1">Choose your preferred visual style.</p>
-                  </div>
-                  <select 
-                    value={config.theme}
-                    onChange={(e) => updateConfig({ theme: e.target.value as any })}
-                    className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-200 outline-none focus:border-emerald-500/50"
-                  >
-                    <option value="system">System Default</option>
-                    <option value="dark">Dark Mode</option>
-                    <option value="light">Light Mode</option>
-                  </select>
-                </div>
+            <div className="h-px w-full bg-[var(--color-border)]" />
+            
+            <div className="space-y-3">
+              <h4 className="text-[13px] font-medium text-white mb-2">Manual Overrides</h4>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => EngineController.start()} className="px-3 py-1.5 text-xs font-medium bg-[#222] hover:bg-[#333] border border-[var(--color-border)] rounded text-white transition-colors">Start Daemon</button>
+                <button onClick={() => EngineController.stop()} className="px-3 py-1.5 text-xs font-medium bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 rounded text-rose-400 transition-colors">Kill Daemon</button>
+                <button onClick={() => EngineController.restart()} className="px-3 py-1.5 text-xs font-medium bg-[#222] hover:bg-[#333] border border-[var(--color-border)] rounded text-white transition-colors">Restart Daemon</button>
+              </div>
+              <div className="flex flex-wrap gap-2 pt-2">
+                <button onClick={() => CameraController.open()} className="px-3 py-1.5 text-xs font-medium bg-[#222] hover:bg-[#333] border border-[var(--color-border)] rounded text-white transition-colors">Open Camera</button>
+                <button onClick={() => CameraController.close()} className="px-3 py-1.5 text-xs font-medium bg-[#222] hover:bg-[#333] border border-[var(--color-border)] rounded text-white transition-colors">Close Camera</button>
+                <button onClick={() => CameraController.restart()} className="px-3 py-1.5 text-xs font-medium bg-[#222] hover:bg-[#333] border border-[var(--color-border)] rounded text-white transition-colors">Restart Camera</button>
+              </div>
+              <div className="flex flex-wrap gap-2 pt-2">
+                <button onClick={() => TrackingController.start()} className="px-3 py-1.5 text-xs font-medium bg-[#222] hover:bg-[#333] border border-[var(--color-border)] rounded text-white transition-colors">Resume Tracking</button>
+                <button onClick={() => TrackingController.stop()} className="px-3 py-1.5 text-xs font-medium bg-[#222] hover:bg-[#333] border border-[var(--color-border)] rounded text-white transition-colors">Pause Tracking</button>
               </div>
             </div>
-          )}
+          </div>
+        </section>
 
-          {activeCategory === 'accessibility' && (
-            <div className="space-y-6">
-              <div className="bg-slate-800/30 border border-slate-700/50 rounded-xl p-5 space-y-6">
-                
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h4 className="text-sm font-medium text-slate-200">High Contrast</h4>
-                    <p className="text-xs text-slate-500 mt-1">Increase contrast for better readability.</p>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input type="checkbox" className="sr-only peer" checked={config.accessibility?.highContrast || false} onChange={(e) => updateConfig({ accessibility: { ...config.accessibility, highContrast: e.target.checked } })} />
-                    <div className="w-11 h-6 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
-                  </label>
-                </div>
+      </div>
 
-                <div className="flex items-center justify-between border-t border-slate-700/50 pt-6">
-                  <div>
-                    <h4 className="text-sm font-medium text-slate-200">Large Text</h4>
-                    <p className="text-xs text-slate-500 mt-1">Increase overall font size.</p>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input type="checkbox" className="sr-only peer" checked={config.accessibility?.largeText || false} onChange={(e) => updateConfig({ accessibility: { ...config.accessibility, largeText: e.target.checked } })} />
-                    <div className="w-11 h-6 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
-                  </label>
-                </div>
-
-                <div className="flex items-center justify-between border-t border-slate-700/50 pt-6">
-                  <div>
-                    <h4 className="text-sm font-medium text-slate-200">Reduced Motion</h4>
-                    <p className="text-xs text-slate-500 mt-1">Minimize UI animations.</p>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input type="checkbox" className="sr-only peer" checked={config.accessibility?.reducedMotion || false} onChange={(e) => updateConfig({ accessibility: { ...config.accessibility, reducedMotion: e.target.checked } })} />
-                    <div className="w-11 h-6 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
-                  </label>
-                </div>
-
-              </div>
-            </div>
-          )}
+      <div className="pt-8 mt-8 border-t border-[var(--color-border)] flex items-center justify-between text-sm text-[var(--color-text-secondary)]">
+        <div>
+           <span>Gesture Control Utility v1.0.0</span>
+        </div>
+        <div className="flex gap-4">
+           <a href="#" className="hover:text-[var(--color-primary)] transition-colors">Documentation</a>
+           <a href="#" className="hover:text-[var(--color-primary)] transition-colors">GitHub</a>
         </div>
       </div>
     </div>

@@ -3,7 +3,7 @@ import { AppConfig, DEFAULT_CONFIG, CalibrationProfile } from '@shared/types';
 import { IPCClient } from '../ipc/client';
 import { IPCEventType } from '@shared/events';
 
-export type TabId = 'dashboard' | 'library' | 'sandbox' | 'calibration' | 'profiles' | 'benchmarking';
+export type TabId = 'dashboard' | 'gestures' | 'settings';
 
 interface AppState {
   activeTab: TabId;
@@ -12,17 +12,25 @@ interface AppState {
   showToast: (title: string, message: string, type: 'success' | 'warn') => void;
   clearToast: (id: string) => void;
   
+  calibrationOpen: boolean;
+  setCalibrationOpen: (open: boolean) => void;
+  
   // Phase 7 config state
   config: AppConfig;
   profiles: CalibrationProfile[];
   updateConfig: (partial: Partial<AppConfig>) => void;
   setConfigFromServer: (config: AppConfig) => void;
   setProfilesFromServer: (profiles: CalibrationProfile[]) => void;
+  
+  // Initialization
+  initializeStore: () => Promise<void>;
 }
 
 export const useAppStore = create<AppState>((set) => ({
   activeTab: 'dashboard',
   setActiveTab: (tab) => set({ activeTab: tab }),
+  calibrationOpen: false,
+  setCalibrationOpen: (open) => set({ calibrationOpen: open }),
   toast: null,
   showToast: (title, message, type) => {
     const id = Math.random().toString(36).substring(7);
@@ -38,10 +46,18 @@ export const useAppStore = create<AppState>((set) => ({
   updateConfig: (partial) => {
     set((state) => {
       const newConfig = { ...state.config, ...partial };
-      IPCClient.send(IPCEventType.CONFIG_UPDATE, partial);
       return { config: newConfig };
     });
   },
   setConfigFromServer: (config) => set({ config }),
   setProfilesFromServer: (profiles) => set({ profiles }),
+  
+  initializeStore: async () => {
+    const savedConfig = await IPCClient.storeGet('appConfig');
+    if (savedConfig) {
+      set({ config: savedConfig });
+    } else {
+      IPCClient.storeSet('appConfig', DEFAULT_CONFIG);
+    }
+  }
 }));

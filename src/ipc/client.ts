@@ -1,75 +1,123 @@
 import { IPCMessage, IPCEventType } from '@shared/events';
-import { SYSTEM_CONSTANTS } from '@shared/constants';
 import { useDiagnosticsStore } from '@stores/diagnosticsStore';
 
 type MessageHandler = (data: IPCMessage) => void;
-type BinaryHandler = (data: ArrayBuffer) => void;
+type BinaryHandler = (data: Uint8Array) => void;
 
 class IPCClientClass {
-  private ws: WebSocket | null = null;
   private handlers: Set<MessageHandler> = new Set();
   private binaryHandlers: Set<BinaryHandler> = new Set();
-  private isConnecting = false;
 
   public connect() {
-    if (this.ws || this.isConnecting) return;
-    this.isConnecting = true;
+    console.log('IPC Connected via Electron Context Bridge');
+    useDiagnosticsStore.getState().addLog('IPC Bridge Connected natively.', 'success');
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const socketUrl = `${protocol}//${window.location.host}/api/ws`;
-    
-    try {
-      this.ws = new WebSocket(socketUrl);
-      this.ws.binaryType = 'arraybuffer';
+    // @ts-ignore
+    if (window.api) {
+      // @ts-ignore
+      window.api.onBroadcast((data: IPCMessage) => {
+        this.handlers.forEach(h => h(data));
+        
+        if (data.type === IPCEventType.INFO) useDiagnosticsStore.getState().addLog(data.message!, 'info');
+        if (data.type === IPCEventType.SUCCESS) useDiagnosticsStore.getState().addLog(data.message!, 'success');
+        if (data.type === IPCEventType.WARNING) useDiagnosticsStore.getState().addLog(data.message!, 'warning');
+        if (data.type === IPCEventType.ERROR) useDiagnosticsStore.getState().addLog(data.message!, 'error');
+      });
 
-      this.ws.onopen = () => {
-        console.log('IPC Connected');
-        useDiagnosticsStore.getState().addLog('IPC Bridge Connected to backend daemon.', 'success');
-        this.isConnecting = false;
-      };
-
-      this.ws.onmessage = (event) => {
-        if (event.data instanceof ArrayBuffer) {
-          this.binaryHandlers.forEach(h => h(event.data as ArrayBuffer));
-          return;
-        }
-
-        try {
-          const data: IPCMessage = JSON.parse(event.data);
-          this.handlers.forEach(h => h(data));
-          
-          if (data.type === IPCEventType.INFO) useDiagnosticsStore.getState().addLog(data.message!, 'info');
-          if (data.type === IPCEventType.SUCCESS) useDiagnosticsStore.getState().addLog(data.message!, 'success');
-          if (data.type === IPCEventType.WARNING) useDiagnosticsStore.getState().addLog(data.message!, 'warning');
-          if (data.type === IPCEventType.ERROR) useDiagnosticsStore.getState().addLog(data.message!, 'error');
-        } catch (err) {
-          console.error('Failed to parse IPC message', err);
-        }
-      };
-
-      this.ws.onclose = () => {
-        useDiagnosticsStore.getState().addLog('IPC Bridge Disconnected from backend daemon.', 'error');
-        this.ws = null;
-        this.isConnecting = false;
-      };
-    } catch (e) {
-      console.error('WebSocket connection failed:', e);
-      this.isConnecting = false;
+      // @ts-ignore
+      window.api.onBinary((data: Uint8Array) => {
+        this.binaryHandlers.forEach(h => h(data));
+      });
+    } else {
+      console.error('Electron API not found in window. Are we running in Electron?');
     }
   }
 
   public disconnect() {
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
+    // @ts-ignore
+    if (window.api) {
+      // @ts-ignore
+      window.api.removeAllListeners();
     }
   }
 
-  public send(action: IPCEventType, payload: any) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ action, payload }));
+  public async send(action: IPCEventType, payload: any) {
+    // @ts-ignore
+    if (window.api) {
+      // @ts-ignore
+      const result = await window.api.send(action, payload);
+      // Dispatch immediate responses if necessary
+      if (result && result.type) {
+        this.handlers.forEach(h => h(result));
+      }
     } else {
-      console.warn('Cannot send IPC message: WebSocket not connected');
+      console.warn('Cannot send IPC message: Electron API missing');
+    }
+  }
+
+  public async invoke(channel: IPCEventType | string, ...args: any[]): Promise<any> {
+    useDiagnosticsStore.getState().addLog(`[IPC] Invoking channel: ${channel}`, 'info');
+    // @ts-ignore
+    if (window.api && window.api.invoke) {
+      // @ts-ignore
+      const res = await window.api.invoke(channel, ...args);
+      return res;
+    }
+    useDiagnosticsStore.getState().addLog(`[IPC] Failed to invoke channel: ${channel} (API missing)`, 'error');
+    return null;
+  }
+
+  public async invokeWithAck(channel: IPCEventType | string, expectedAck: string, timeoutMs: number = 5000, ...args: any[]): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const startTime = Date.now();
+      useDiagnosticsStore.getState().addLog(`[IPC] Invoking ${channel}, waiting for ACK: ${expectedAck}`, 'info');
+
+      const timeout = setTimeout(() => {
+        unsubscribe();
+        const err = `[IPC] Timeout (${timeoutMs}ms) waiting for ACK: ${expectedAck}`;
+        useDiagnosticsStore.getState().addLog(err, 'error');
+        reject(new Error(err));
+      }, timeoutMs);
+
+      const unsubscribe = this.subscribe((msg) => {
+        if (msg.type === expectedAck || (msg.type === 'ERROR' && channel !== 'GET_STATUS')) {
+          clearTimeout(timeout);
+          unsubscribe();
+          if (msg.type === 'ERROR') {
+            const err = `[IPC] Backend reported error for ${channel}: ${msg.payload || msg.message}`;
+            useDiagnosticsStore.getState().addLog(err, 'error');
+            reject(new Error(err));
+          } else {
+            const elapsed = Date.now() - startTime;
+            useDiagnosticsStore.getState().addLog(`[IPC] Received ACK ${expectedAck} in ${elapsed}ms`, 'success');
+            resolve(msg.payload);
+          }
+        }
+      });
+
+      this.invoke(channel, ...args).catch((err) => {
+        clearTimeout(timeout);
+        unsubscribe();
+        useDiagnosticsStore.getState().addLog(`[IPC] Invoke failed for ${channel}: ${err.message}`, 'error');
+        reject(err);
+      });
+    });
+  }
+
+  public async storeGet(key: string): Promise<any> {
+    // @ts-ignore
+    if (window.api && window.api.storeGet) {
+      // @ts-ignore
+      return await window.api.storeGet(key);
+    }
+    return null;
+  }
+
+  public async storeSet(key: string, value: any): Promise<void> {
+    // @ts-ignore
+    if (window.api && window.api.storeSet) {
+      // @ts-ignore
+      await window.api.storeSet(key, value);
     }
   }
 

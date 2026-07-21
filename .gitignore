@@ -6,3 +6,26 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+
+# Electron builder releases
+release/
+release2/
+release3/
+release4/
+out/
+
+# Temporary and Scratch files
+scratch/
+runtime_logs.txt
+calibrations.json
+test_*.py
+system_profiler.py
+generate_audit_report.py
+run_test.cjs

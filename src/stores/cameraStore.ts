@@ -14,6 +14,7 @@ interface TelemetryPayload {
 interface CameraState {
   devices: CameraDeviceInfo[];
   activeDeviceId: string | null;
+  activeDevice: (CameraDeviceInfo & { deviceId: string; label: string }) | null;
   telemetry: CameraTelemetry;
   tracking: TrackingDiagnostics | null;
   gestureMetrics: GestureDiagnosticsData | null;
@@ -38,6 +39,7 @@ interface CameraState {
 export const useCameraStore = create<CameraState>((set) => ({
   devices: [],
   activeDeviceId: null,
+  activeDevice: null,
   telemetry: {
     fps: 0,
     droppedFrames: 0,
@@ -65,8 +67,16 @@ export const useCameraStore = create<CameraState>((set) => ({
   testingMetrics: null,
   previewFrameBase64: null,
 
-  setDevices: (devices) => set({ devices }),
-  setActiveDevice: (activeDeviceId) => set({ activeDeviceId }),
+  setDevices: (devices) => set((state) => {
+    const activeDev = devices.find(d => d.id === state.activeDeviceId) || null;
+    const activeDevice = activeDev ? { ...activeDev, deviceId: activeDev.id, label: activeDev.name } : null;
+    return { devices, activeDevice };
+  }),
+  setActiveDevice: (activeDeviceId) => set((state) => {
+    const activeDev = state.devices.find(d => d.id === activeDeviceId) || null;
+    const activeDevice = activeDev ? { ...activeDev, deviceId: activeDev.id, label: activeDev.name } : null;
+    return { activeDeviceId, activeDevice };
+  }),
   updateTelemetry: (payload) => set((state) => ({ 
     telemetry: payload.camera ? { ...state.telemetry, ...payload.camera } : state.telemetry,
     tracking: payload.tracking !== undefined ? { ...state.tracking, ...payload.tracking } : state.tracking,

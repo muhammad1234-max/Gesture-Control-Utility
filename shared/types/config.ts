@@ -30,6 +30,19 @@ export interface AppConfig {
     mode: AdaptiveMode;
     overrides: AdaptiveOverrides;
   };
+  calibration: {
+    workingArea: {
+      minX: number;
+      maxX: number;
+      minY: number;
+      maxY: number;
+    };
+    pinchThresholds: {
+      left: number;
+      right: number;
+      scroll: number;
+    };
+  };
   activeProfileId: string;
 }
 
@@ -58,6 +71,19 @@ export const DEFAULT_CONFIG: AppConfig = {
   adaptive: {
     mode: 'assisted',
     overrides: {}
+  },
+  calibration: {
+    workingArea: {
+      minX: 0.2,
+      maxX: 0.8,
+      minY: 0.2,
+      maxY: 0.8,
+    },
+    pinchThresholds: {
+      left: 0.05,
+      right: 0.05,
+      scroll: 0.05,
+    }
   },
   activeProfileId: 'default'
 };

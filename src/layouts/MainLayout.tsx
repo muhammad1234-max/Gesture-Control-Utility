@@ -1,93 +1,122 @@
 import React, { useEffect } from 'react';
 import Sidebar from './Sidebar';
 import DashboardView from '@views/DashboardView';
-import GestureLibraryView from '@views/GestureLibraryView';
-import SandboxView from '@views/SandboxView';
-import CalibrationView from '@views/CalibrationView';
-import ProfileView from '@views/ProfileView';
-import BenchmarkingView from '@views/BenchmarkingView';
 import SettingsView from '@views/SettingsView';
+import GesturesView from '@views/GesturesView';
+import CalibrationWizard from '@components/CalibrationWizard';
+import { DiagnosticsPanel } from '@components/DiagnosticsPanel';
 import { useAppStore } from '@stores/appStore';
 import { useTelemetryStore } from '@stores/telemetryStore';
-import { useDiagnosticsStore } from '@stores/diagnosticsStore';
 import { IPCClient } from '@ipc/client';
 import { IPCEventType } from '@shared/events';
-import { CheckCircle, AlertTriangle } from 'lucide-react';
+import { EngineController, CameraController, TrackingController, ConfigurationController } from '@controllers';
 
 export default function MainLayout() {
   const activeTab = useAppStore(state => state.activeTab);
-  const toast = useAppStore(state => state.toast);
+  const initializeStore = useAppStore(state => state.initializeStore);
+  const config = useAppStore(state => state.config);
+  const calibrationOpen = useAppStore(state => state.calibrationOpen);
+  const showToast = useAppStore(state => state.showToast);
   
   const engineActive = useTelemetryStore(state => state.engineActive);
-  const setFps = useTelemetryStore(state => state.setFps);
-  
-  const addLog = useDiagnosticsStore(state => state.addLog);
+  const setEngineActive = useTelemetryStore(state => state.setEngineActive);
+  const setCameraOpen = useTelemetryStore(state => state.setCameraOpen);
+  const setTrackingEnabled = useTelemetryStore(state => state.setTrackingEnabled);
+  const setConfigApplied = useTelemetryStore(state => state.setConfigApplied);
+  const resetState = useTelemetryStore(state => state.resetState);
 
-  // Initialize IPC
   useEffect(() => {
-    addLog('Skeletal Pipeline Engine initialized.', 'info');
-    addLog('Host OS: Windows 11 x64 (CLR Native CLI Host)', 'info');
-    addLog('Hardware backend: DirectX12 DirectCompute shaders loaded.', 'info');
-
     IPCClient.connect();
+    initializeStore();
+
+    const unsubscribe = IPCClient.subscribe((msg) => {
+      // Deterministic State Machine Handlers
+      if (msg.type === 'ENGINE_STARTED') {
+        setEngineActive(true);
+        CameraController.open(); // Transition to Open Camera
+      }
+      else if (msg.type === 'CAMERA_OPENED') {
+        setCameraOpen(true);
+        // Wait for hardware spin up before starting tracking
+        setTimeout(() => {
+          TrackingController.start(); // Transition to Tracking
+        }, 800);
+      }
+      else if (msg.type === 'TRACKING_STARTED') {
+        setTrackingEnabled(true);
+        // Finally push the configuration
+        const currentConfig = useAppStore.getState().config;
+        ConfigurationController.apply(currentConfig);
+      }
+      else if (msg.type === 'CONFIG_APPLIED') {
+        setConfigApplied(true);
+      }
+      else if (msg.type === 'CAMERA_CLOSED') {
+        setCameraOpen(false);
+      }
+      else if (msg.type === 'TRACKING_STOPPED') {
+        setTrackingEnabled(false);
+      }
+      else if (msg.type === 'ENGINE_DIED') {
+        resetState();
+        showToast('Engine Crashed', 'The backend daemon terminated unexpectedly.', 'error');
+      }
+    });
 
     return () => {
+      unsubscribe();
       IPCClient.disconnect();
     };
-  }, [addLog]);
+  }, []);
 
-  // Handle telemetry sync
-  useEffect(() => {
+  const handleToggleEngine = async () => {
     if (engineActive) {
-      IPCClient.send(IPCEventType.ENGINE_STATUS, { active: true });
-      addLog('Skeletal Tracking Service initialized local telemetry.', 'info');
-      setFps(60);
-
-      const interval = setInterval(() => {
-        setFps(Math.floor(Math.random() * 5) + 57);
-        const checkChance = Math.random();
-        if (checkChance < 0.15) {
-          addLog('Tracking pipeline confidence check: stable (96.4% confidence)', 'info');
-        } else if (checkChance < 0.22) {
-          addLog('DirectX buffers synchronized. Pipeline render latency: 4.1ms', 'info');
-        }
-      }, 12000);
-
-      return () => clearInterval(interval);
+      await EngineController.stop();
+      resetState();
     } else {
-      IPCClient.send(IPCEventType.ENGINE_STATUS, { active: false });
-      setFps(0);
-      addLog('Skeletal Tracking Service disabled locally.', 'warning');
+      await EngineController.start();
     }
-  }, [engineActive, addLog, setFps]);
+  };
 
-  const config = useAppStore(state => state.config);
   const accessibility = config?.accessibility || { highContrast: false, largeText: false, reducedMotion: false };
   const theme = config?.theme || 'dark';
 
   return (
     <div 
       id="gesture-app-shell" 
-      className={`min-h-screen flex flex-col font-sans select-none overflow-hidden transition-colors duration-300
-        ${theme === 'light' ? 'bg-slate-50 text-slate-900' : 'bg-[#0c0e12] text-slate-200'}
+      className={`min-h-screen flex flex-col font-sans select-none overflow-hidden
+        bg-[var(--color-bg-app)] text-[var(--color-text-primary)]
         ${accessibility.highContrast ? 'contrast-125' : ''}
         ${accessibility.largeText ? 'text-lg' : 'text-sm'}
         ${accessibility.reducedMotion ? 'motion-reduce' : ''}
       `}
     >
       {/* Windows 11 Native-like Title Bar */}
-      <header className="h-10 flex items-center justify-between px-4 shrink-0 app-region-drag select-none border-b border-slate-800/40">
+      <header className="h-[40px] flex items-center justify-between pl-4 pr-1 shrink-0 app-region-drag select-none bg-[#0a0a0a] border-b border-[#222]">
         <div className="flex items-center gap-2">
-          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500/80"></div>
-          <span className="text-[11px] font-medium text-slate-400 tracking-wide">Gesture Control Command Center</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--color-primary)]">
+            <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+          </svg>
+          <span className="text-[12px] font-medium text-white/90 tracking-wide">Gesture Control Utility</span>
         </div>
         
-        {/* Fake Window Controls */}
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-3 opacity-40 hover:opacity-100 transition-opacity">
-            <div className="w-3 h-px bg-slate-400"></div>
-            <div className="w-3 h-3 border border-slate-400 rounded-[2px]"></div>
-            <div className="w-3 h-3 relative before:absolute before:inset-0 before:rotate-45 before:bg-slate-400 before:h-px before:top-1.5 after:absolute after:inset-0 after:-rotate-45 after:bg-slate-400 after:h-px after:top-1.5"></div>
+        <div className="flex items-center h-full app-region-no-drag">
+          <div className="flex items-center gap-3 mr-4">
+             <span className="text-xs text-white/50">{engineActive ? 'Engine Running' : 'Engine Suspended'}</span>
+             <label className="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" className="sr-only peer" checked={engineActive} onChange={handleToggleEngine} />
+                <div className="w-9 h-5 bg-[#333333] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[var(--color-primary)]"></div>
+              </label>
+          </div>
+          <div className="w-px h-4 bg-[#333] mr-2"></div>
+          <div onClick={() => IPCClient.invoke('window-minimize')} className="app-region-no-drag w-12 h-full flex items-center justify-center hover:bg-white/10 transition-colors cursor-pointer">
+            <svg width="10" height="10" viewBox="0 0 10 10"><path fill="currentColor" d="M0,4.5v1h10v-1H0z"/></svg>
+          </div>
+          <div onClick={() => IPCClient.invoke('window-maximize')} className="app-region-no-drag w-12 h-full flex items-center justify-center hover:bg-white/10 transition-colors cursor-pointer">
+            <svg width="10" height="10" viewBox="0 0 10 10"><path fill="currentColor" d="M1,1v8h8V1H1z M8,8H2V2h6V8z"/></svg>
+          </div>
+          <div onClick={() => IPCClient.invoke('window-close')} className="app-region-no-drag w-12 h-full flex items-center justify-center hover:bg-red-500 hover:text-white transition-colors cursor-pointer">
+            <svg width="10" height="10" viewBox="0 0 10 10"><path fill="currentColor" d="M1.5,1.5l7,7M8.5,1.5l-7,7" stroke="currentColor" strokeWidth="1"/></svg>
           </div>
         </div>
       </header>
@@ -97,43 +126,16 @@ export default function MainLayout() {
         <Sidebar />
 
         <main className="flex-1 overflow-y-auto no-scrollbar relative p-8">
-          <div className="max-w-7xl mx-auto">
+          <div className="max-w-4xl mx-auto pb-12">
             {activeTab === 'dashboard' && <DashboardView />}
-            {activeTab === 'library' && config.userMode !== 'beginner' && <GestureLibraryView />}
-            {activeTab === 'sandbox' && config.userMode !== 'beginner' && <SandboxView />}
-            {activeTab === 'calibration' && config.userMode !== 'beginner' && <CalibrationView />}
-            {activeTab === 'profiles' && <SettingsView />}
-            {activeTab === 'benchmarking' && config.userMode === 'developer' && <BenchmarkingView />}
+            {activeTab === 'gestures' && <GesturesView />}
+            {activeTab === 'settings' && <SettingsView />}
           </div>
-
-          {/* Floating Toast Notification */}
-          {toast && (
-            <div 
-              className={`fixed bottom-8 right-8 p-4 rounded-xl shadow-2xl max-w-sm z-50 flex items-start gap-3 transition-all duration-300 transform translate-y-0 scale-100 ${
-                toast.type === 'success' 
-                  ? 'bg-[#181a20] border border-emerald-500/10 text-slate-200' 
-                  : 'bg-[#181a20] border border-amber-500/10 text-slate-200'
-              }`}
-            >
-              <div className="mt-0.5">
-                {toast.type === 'success' ? (
-                  <CheckCircle className="w-4 h-4 text-emerald-400" />
-                ) : (
-                  <AlertTriangle className="w-4 h-4 text-amber-400" />
-                )}
-              </div>
-              <div className="space-y-0.5">
-                <h4 className="text-[13px] font-medium text-slate-100">
-                  {toast.title}
-                </h4>
-                <p className="text-[12px] text-slate-400">
-                  {toast.message}
-                </p>
-              </div>
-            </div>
-          )}
         </main>
       </div>
+      
+      {calibrationOpen && <CalibrationWizard />}
+      <DiagnosticsPanel />
     </div>
   );
 }

@@ -7,15 +7,30 @@ export enum IPCEventType {
   ERROR = 'error',
   
   // Camera specific events
-  CAMERA_LIST_REQUEST = 'camera_list_request',
-  CAMERA_LIST_RESPONSE = 'camera_list_response',
-  CAMERA_START = 'camera_start',
-  CAMERA_STOP = 'camera_stop',
   CAMERA_TELEMETRY = 'camera_telemetry',
-  CAMERA_PREVIEW_FRAME = 'camera_preview_frame',
   
   // Tracking specific
-  TRACKING_LANDMARKS = 'tracking_landmarks'
+  TRACKING_LANDMARKS = 'tracking_landmarks',
+
+  // Config
+  CONFIG_UPDATE = 'config_update',
+  CALIBRATION_MODE = 'CALIBRATION_MODE',
+
+  // Subsystem Control Commands
+  START_ENGINE = 'START_ENGINE',
+  STOP_ENGINE = 'STOP_ENGINE',
+  RESTART_ENGINE = 'RESTART_ENGINE',
+  
+  OPEN_CAMERA = 'OPEN_CAMERA',
+  CLOSE_CAMERA = 'CLOSE_CAMERA',
+  RESTART_CAMERA = 'RESTART_CAMERA',
+  
+  START_TRACKING = 'START_TRACKING',
+  STOP_TRACKING = 'STOP_TRACKING',
+  
+  RELOAD_CONFIG = 'RELOAD_CONFIG',
+  QUIT_APPLICATION = 'QUIT_APPLICATION',
+  GET_STATUS = 'GET_STATUS'
 }
 
 export interface IPCMessage<T = any> {
