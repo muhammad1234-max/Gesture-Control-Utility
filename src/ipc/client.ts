@@ -1,5 +1,6 @@
 import { IPCMessage, IPCEventType } from '@shared/events';
 import { useDiagnosticsStore } from '@stores/diagnosticsStore';
+import { useEngineStore } from '@stores/engineStore';
 
 type MessageHandler = (data: IPCMessage) => void;
 type BinaryHandler = (data: Uint8Array) => void;
@@ -18,6 +19,27 @@ class IPCClientClass {
       window.api.onBroadcast((data: IPCMessage) => {
         this.handlers.forEach(h => h(data));
         
+        if (data.type === 'ENGINE_STATE_CHANGED' && data.payload) {
+          const { state, progress, message } = data.payload;
+          useEngineStore.getState().setEngineState(state, progress, message);
+        } else if (data.type === 'SUBSYSTEM_STATE_CHANGED' && data.payload) {
+          if (data.payload.subsystems) useEngineStore.getState().setSubsystems(data.payload.subsystems, data.payload.milestone);
+        } else if (data.type === 'HEARTBEAT' && data.payload) {
+          useEngineStore.getState().updateHeartbeat(data.payload);
+        } else if (data.type === 'HEALTH_UPDATE' && data.payload) {
+          useEngineStore.getState().setHealth(data.payload);
+        } else if (data.type === 'ENGINE_LOG' && data.payload) {
+          useEngineStore.getState().addLog(data.payload);
+        } else if (data.type === 'TELEMETRY' && data.payload) {
+          // Extract tracking quality from telemetry if present
+          if (data.payload.tracking_quality) {
+            useEngineStore.getState().setTrackingQuality(data.payload.tracking_quality);
+          }
+          if (data.payload.subsystems) {
+            useEngineStore.getState().setSubsystems(data.payload.subsystems);
+          }
+        }
+
         if (data.type === IPCEventType.INFO) useDiagnosticsStore.getState().addLog(data.message!, 'info');
         if (data.type === IPCEventType.SUCCESS) useDiagnosticsStore.getState().addLog(data.message!, 'success');
         if (data.type === IPCEventType.WARNING) useDiagnosticsStore.getState().addLog(data.message!, 'warning');

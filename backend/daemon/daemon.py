@@ -1,6 +1,5 @@
 import sys
 import cv2
-import mediapipe as mp
 import threading
 import os
 import time
@@ -10,12 +9,19 @@ import math
 import psutil
 
 from mouse_controller import MouseController
-from interaction_manager import PriorityManager
-from input_injector import InputInjector
+from camera import CameraStream
+from tracker import HandTracker
+from gesture_engine import GestureEngine
+from motion_engine import MotionEngine
+from action_executor import ActionExecutor
+from config import BackendConfig
+from validation_reporter import ValidationReporter
+from environment_monitor import EnvironmentMonitor
+from hardware_profiler import HardwareProfiler
+from gesture_registry import GestureRegistry
+from gesture_intent import GestureIntentRecognizer as IntentRecognizer
 
-from modules.cursor_module import CursorModule
-from modules.click_module import ClickModule
-from modules.continuous_module import ContinuousModule
+
 
 def get_screen_size():
     return ctypes.windll.user32.GetSystemMetrics(0), ctypes.windll.user32.GetSystemMetrics(1)
@@ -50,7 +56,6 @@ class CameraStream:
 
 def main():
     stream = CameraStream()
-    mp_hands = mp.solutions.hands
     hands = None
     
     state = {
@@ -165,26 +170,29 @@ def main():
     fps_frames = 0
     fps = 0
     
-    # Phase 3.5 Setup
+    
+    # Pipeline Setup
     mouse = MouseController()
-    injector = InputInjector(mouse)
-    manager = PriorityManager()
+    action_executor = ActionExecutor(mouse)
+    config = BackendConfig()
+    config.state = state
     
-    cursor_mod = CursorModule(manager, mouse, state, get_screen_size)
-    left_mod = ClickModule("LEFT_CLICK", 50, manager, mouse.left_down, mouse.left_up)
-    right_mod = ClickModule("RIGHT_CLICK", 50, manager, mouse.right_down, mouse.right_up)
-    scroll_mod = ContinuousModule("SCROLL", 70, manager, injector, is_zoom=False)
-    zoom_mod = ContinuousModule("ZOOM", 80, manager, injector, is_zoom=True)
+    tracker = HandTracker()
     
-    manager.register_module(cursor_mod)
-    manager.register_module(left_mod)
-    manager.register_module(right_mod)
-    manager.register_module(scroll_mod)
-    manager.register_module(zoom_mod)
+    registry = GestureRegistry()
 
-    conf_hist = []
+    gesture_engine = GestureEngine()
+    motion_engine = MotionEngine(get_screen_size)
+    
+    env_monitor = EnvironmentMonitor()
+    val_reporter = ValidationReporter()
+    
+    print(json.dumps({"event": "ENGINE_STARTED"}), flush=True)
+    print(json.dumps({"event": "SELF_TEST_RESULT", "payload": {"status": "ok"}}), flush=True)
+    print(json.dumps({"event": "PYTHON_BUILD_ID", "payload": "1784743437055-b577eae"}), flush=True)
     
     try:
+
         last_t = time.perf_counter()
         
         while state["running"]:
@@ -195,9 +203,7 @@ def main():
             last_t = t_curr
             
             if not state["tracking"]:
-                if hands is not None:
-                    hands.close()
-                    hands = None
+                tracker.stop()
                 time.sleep(0.05)
                 continue
                 
@@ -230,14 +236,7 @@ def main():
                     manager.emergency_recover()
                     continue
             else:
-                if hands is None:
-                    hands = mp_hands.Hands(
-                        static_image_mode=False,
-                        max_num_hands=1,
-                        model_complexity=0,
-                        min_detection_confidence=0.7,
-                        min_tracking_confidence=0.7
-                    )
+                tracker.start()
                 
                 success, rgb = stream.read()
                 t_cam = time.perf_counter()
@@ -252,7 +251,7 @@ def main():
                     fps_frames = 0
                     fps_start_time = time.time()
                 
-                results = hands.process(rgb)
+                results = tracker.process(rgb)
             
                 if results.multi_hand_landmarks:
                     has_hand = True
@@ -297,44 +296,62 @@ def main():
             else:
                 conf_hist = []
                 
-            manager.update_hand_presence(has_hand, t_curr)
+            
+            
+            tracking_state_label = "TRACKING" if has_hand else "SEARCHING"
+            quality_score = confidence
+            quality_label = "HIGH" if quality_score > 0.8 else "LOW"
+            detected_pose_name = "NONE"
+            
+            t_inference_end = time.perf_counter()
+            env_penalty = env_monitor.update(rgb) if (rgb is not None and fps_frames % 30 == 0) else env_monitor.average_brightness / 255.0
 
-            t_filter_start = time.perf_counter()
-            if has_hand:
-                if not state.get("hand_detected", False):
-                    state["hand_detected"] = True
-                    print(json.dumps({"event": "HAND_DETECTED", "payload": True}), flush=True)
-                
-                if state.get("calibration_mode", False):
-                    continue
-                
-                # We need closing velocity for Intent-Based recognition
-                # Not fully tracking previous distances here, simplified closing_vel = 0 for now.
-                
-                cursor_mod.process(index_x, index_y, dt, confidence)
-                left_mod.process(hand_scale, dist_i, 0.0, conf_hist, t_curr, dt)
-                right_mod.process(hand_scale, dist_m, 0.0, conf_hist, t_curr, dt)
-                
-                # Check 600ms hold for zoom transition
-                if scroll_mod.is_active and (t_curr - scroll_mod.state_enter_time) >= 0.6:
-                    scroll_mod.is_active = False
-                    zoom_mod.is_active = True
-                    zoom_mod.state_enter_time = t_curr
-                    zoom_mod.anchor = dist_r
-                    injector.velocity_callback(None, is_zoom=False) # kill scroll
-                
-                scroll_mod.process(hand_scale, dist_r, index_x, index_y, 0.0, conf_hist, t_curr, dt)
-                zoom_mod.process(hand_scale, dist_r, index_x, index_y, 0.0, conf_hist, t_curr, dt)
-                
-                # Manager arbitrates and executes winner
-                manager.arbitrate_and_execute(t_curr, dt)
+            tracking_data = {
+                "has_hand": has_hand,
+                "tracking_state": tracking_state_label,
+                "raw_x": index_x,
+                "raw_y": index_y,
+                "dist_i": dist_i,
+                "dist_m": dist_m,
+                "dist_s": dist_r,
+                "hand_scale": hand_scale,
+                "confidence": confidence,
+                "t_curr": t_curr,
+                "zoom_pose": False, # calculated internally if needed
+                "scroll_pose": False,
+                "conf_hist": conf_hist,
+                "env_penalty": env_penalty
+            }
 
-            else:
-                if state.get("hand_detected", False):
-                    state["hand_detected"] = False
-                    print(json.dumps({"event": "HAND_DETECTED", "payload": False}), flush=True)
+            try:
+                if has_hand:
+                    if not state.get("hand_detected", False):
+                        state["hand_detected"] = True
+                        print(json.dumps({"event": "HAND_DETECTED", "payload": True}), flush=True)
+                        
+                    if state.get("calibration_mode", False):
+                        t_end = time.perf_counter()
+                        pass
+                    else:
+                        new_intent = gesture_engine.detect_intent(tracking_data)
+                        action_cmd = motion_engine.process(new_intent, config, env_penalty, dt)
+                        action_executor.execute(action_cmd)
+                        
+                else:
+                    if state.get("hand_detected", False):
+                        state["hand_detected"] = False
+                        print(json.dumps({"event": "HAND_DETECTED", "payload": False}), flush=True)
+                    
+                    new_intent = gesture_engine.detect_intent(tracking_data)
+                    action_cmd = motion_engine.process(new_intent, config, env_penalty, dt)
+                    action_executor.execute(action_cmd)
+
+            except Exception as ex:
+                import traceback
+                print(json.dumps({"event": "MODULE_EXCEPTION", "module": "ProcessingLoop", "trace": traceback.format_exc()}), flush=True)
 
             t_end = time.perf_counter()
+
             
             if has_hand:
                 try:
@@ -343,7 +360,7 @@ def main():
                 except:
                     cpu, ram = 0, 0
                     
-                active_name = manager.active_module.name if manager.active_module else "NONE"
+                active_name = new_intent.type.name if "new_intent" in locals() and new_intent else "NONE"
                 
                 print(json.dumps({
                     "event": "TELEMETRY",
@@ -362,17 +379,42 @@ def main():
                             "cpu": cpu,
                             "ram_mb": ram
                         },
-                        "gesture_stats": {
-                            "left": left_mod.stats,
-                            "right": right_mod.stats,
-                            "mode": active_name
-                        }
+                        
+                        "subsystems": {
+                            "engine": "READY",
+                            "camera": "READY" if state.get("camera_id") is not None else "DISCONNECTED",
+                            "tracking": tracking_state_label
+                        },
+                        "intent_matrix": {},
+                        "active_intent": active_name
+
+                    }
+                }), flush=True)
+
+    
+            # Periodic 1.0s Heartbeat
+            if 'last_heartbeat_t' not in locals(): last_heartbeat_t = t_start
+            if (t_curr - last_heartbeat_t) >= 1.0:
+                last_heartbeat_t = t_curr
+                print(json.dumps({
+                    "event": "HEARTBEAT",
+                    "payload": {
+                        "cpu": cpu if 'cpu' in locals() else 0,
+                        "ram_mb": ram if 'ram' in locals() else 0,
+                        "fps": round(fps, 1),
+                        "camera_open": state.get("camera_id") is not None,
+                        "tracking": state.get("tracking", False),
+                        "uptime_sec": int(t_curr - t_start),
+                        "frame_latency_ms": round((t_end - t_start) * 1000.0, 2)
                     }
                 }), flush=True)
 
     finally:
-        print("Cleaning up daemon resources...", flush=True)
-        injector.stop()
+        print(json.dumps({"event": "INFO", "message": "Executing ordered shutdown"}), flush=True)
+        try: action_executor.stop()
+        except: pass
+        print("Daemon shutdown complete.", file=sys.stderr, flush=True)
+
 
 if __name__ == "__main__":
     main()

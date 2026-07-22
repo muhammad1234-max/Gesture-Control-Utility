@@ -29,3 +29,11 @@ test_*.py
 system_profiler.py
 generate_audit_report.py
 run_test.cjs
+
+# Auto-generated builds
+fingerprint.json
+graphify-out/
+
+# IDE
+.vscode/
+.idea/

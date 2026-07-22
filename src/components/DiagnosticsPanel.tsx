@@ -82,15 +82,15 @@ export const DiagnosticsPanel = () => {
         <div className="space-y-1">
           <h3 className="text-purple-400 font-bold mb-2">SYSTEM CONFIG</h3>
           <div className="grid grid-cols-2 gap-1">
-            <span>Camera ID:</span> <span className="text-white">{config.cameraId}</span>
-            <span>Smoothing:</span> <span className="text-white">{config.adaptive.overrides.smoothing}</span>
+            <span>Camera ID:</span> <span className="text-white">{config?.camera?.deviceId ?? 'Default (0)'}</span>
+            <span>Smoothing:</span> <span className="text-white">{config?.adaptive?.overrides?.smoothing ?? 'Auto (0.5)'}</span>
           </div>
         </div>
 
         <div className="space-y-1">
           <h3 className="text-purple-400 font-bold mb-2">LAST LOG TRACE</h3>
           <div className="bg-black/50 p-2 rounded border border-purple-500/20 text-white whitespace-pre-wrap break-words">
-            {lastLog ? `[${lastLog.timestamp.toLocaleTimeString()}] [${lastLog.type.toUpperCase()}]\n${lastLog.message}` : 'No logs yet...'}
+            {lastLog ? `[${lastLog.timestamp ?? 'N/A'}] [${(lastLog.type ?? 'info').toUpperCase()}]\n${lastLog.message ?? ''}` : 'No logs yet...'}
           </div>
         </div>
       </div>

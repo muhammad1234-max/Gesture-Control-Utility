@@ -60,11 +60,14 @@ class MouseController:
         self.left_pressed = False
         self.right_pressed = False
         self.ctrl_pressed = False
+        self.dry_run = False
 
     def set_cursor_pos(self, x, y):
+        if self.dry_run: return
         ctypes.windll.user32.SetCursorPos(int(x), int(y))
 
     def _send_mouse(self, flags, data=0):
+        if self.dry_run: return
         extra = ctypes.c_ulong(0)
         ii_ = INPUT_I()
         ii_.mi = MOUSEINPUT(0, 0, data, flags, 0, ctypes.pointer(extra))
@@ -112,6 +115,17 @@ class MouseController:
         self._send_mouse(MOUSEEVENTF_WHEEL, int(delta))
 
     def release_all(self):
-        self.left_up()
-        self.right_up()
-        self.ctrl_up()
+        """OS Input Safety Guarantee: Release all mouse buttons & modifier keys unconditionally"""
+        try:
+            self._send_mouse(MOUSEEVENTF_LEFTUP)
+            self.left_pressed = False
+            self._send_mouse(MOUSEEVENTF_RIGHTUP)
+            self.right_pressed = False
+            self._send_mouse(0x0020) # Middle up
+            self._send_keyboard(0x11, KEYEVENTF_KEYUP) # Ctrl up
+            self.ctrl_pressed = False
+            self._send_keyboard(0x10, KEYEVENTF_KEYUP) # Shift up
+            self._send_keyboard(0x12, KEYEVENTF_KEYUP) # Alt up
+            self._send_keyboard(0x5B, KEYEVENTF_KEYUP) # Win up
+        except Exception:
+            pass

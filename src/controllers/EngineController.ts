@@ -1,35 +1,29 @@
 import { IPCClient } from '@ipc/client';
-import { IPCEventType } from '@shared/events';
-import { useAppStore } from '@stores/appStore';
+import { useEngineStore } from '@stores/engineStore';
 
 export const EngineController = {
   start: async () => {
     try {
-      await IPCClient.invokeWithAck(IPCEventType.START_ENGINE, 'ENGINE_STARTED', 8000);
+      useEngineStore.getState().setEngineState('STARTING', 10, 'Spawning Python process...');
+      await IPCClient.invoke('START_ENGINE');
     } catch (e: any) {
-      useAppStore.getState().showToast('Engine Start Failed', e.message, 'warn');
+      useEngineStore.getState().setEngineState('ERROR', 0, e.message || 'Failed to start engine');
     }
   },
   stop: async () => {
     try {
-      // main.ts will broadcast ENGINE_DIED when the daemon exits
-      await IPCClient.invokeWithAck(IPCEventType.STOP_ENGINE, 'ENGINE_DIED', 5000);
+      useEngineStore.getState().setEngineState('STOPPING', 0, 'Stopping engine...');
+      await IPCClient.invoke('STOP_ENGINE');
     } catch (e: any) {
-      useAppStore.getState().showToast('Engine Stop Failed', e.message, 'warn');
+      useEngineStore.getState().setEngineState('ERROR', 0, e.message || 'Failed to stop engine');
     }
   },
   restart: async () => {
     try {
-      await IPCClient.invokeWithAck(IPCEventType.STOP_ENGINE, 'ENGINE_DIED', 5000);
-      setTimeout(async () => {
-        try {
-          await IPCClient.invokeWithAck(IPCEventType.START_ENGINE, 'ENGINE_STARTED', 8000);
-        } catch (e: any) {
-          useAppStore.getState().showToast('Engine Restart Failed', e.message, 'warn');
-        }
-      }, 500);
+      useEngineStore.getState().setEngineState('RESTARTING', 0, 'Restarting engine...');
+      await IPCClient.invoke('RESTART_ENGINE');
     } catch (e: any) {
-      useAppStore.getState().showToast('Engine Restart Failed', e.message, 'warn');
+      useEngineStore.getState().setEngineState('ERROR', 0, e.message || 'Failed to restart engine');
     }
   }
 };

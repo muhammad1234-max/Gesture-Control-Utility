@@ -46,6 +46,15 @@ export const useTelemetryStore = create<TelemetryState>((set) => ({
   setConfigApplied: (configApplied) => set({ configApplied }),
   setFps: (fps) => set({ fps }),
   setLatency: (latency) => set({ latency }),
-  setMetrics: (metrics) => set({ metrics }),
+  setMetrics: (metrics) => set((state) => ({
+    metrics: {
+      t_inference_ms: metrics?.t_inference_ms ?? 0,
+      t_filter_ms: metrics?.t_filter_ms ?? 0,
+      t_injection_ms: metrics?.t_injection_ms ?? 0,
+      total_ms: metrics?.total_ms ?? 0,
+      cpu: metrics?.cpu ?? 0,
+      ram_mb: metrics?.ram_mb ?? 0
+    }
+  })),
   resetState: () => set({ engineActive: false, cameraOpen: false, trackingEnabled: false, configApplied: false, fps: 0, latency: 0, metrics: {t_inference_ms: 0, t_filter_ms: 0, t_injection_ms: 0, total_ms: 0, cpu: 0, ram_mb: 0} }),
 }));

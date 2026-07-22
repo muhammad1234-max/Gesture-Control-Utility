@@ -8,12 +8,13 @@
     "dev": "vite",
     "build:ui": "vite build",
     "build:electron": "esbuild backend/electron/main.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/electron/main.cjs && esbuild backend/electron/preload.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/electron/preload.cjs",
-    "build": "npm run build:ui && npm run build:electron",
+    "prebuild": "node scripts/kill_stale_daemon.cjs && node scripts/generate_fingerprint.cjs",
+    "build": "npm run clean && npm run build:ui && npm run build:electron",
     "electron:dev": "concurrently \"vite\" \"npm run build:electron && cross-env NODE_ENV=development electron .\"",
     "electron:start": "npm run build:electron && electron .",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
-    "clean": "rm -rf dist",
+    "clean": "node -e \"const fs=require('fs'); fs.rmSync('dist', {recursive:true, force:true}); fs.rmSync('release', {recursive:true, force:true});\"",
     "lint": "tsc --noEmit"
   },
   "build": {
@@ -35,7 +36,8 @@
         "from": "backend",
         "to": "backend",
         "filter": [
-          "**/*.py"
+          "**/*.py",
+          "**/*.json"
         ]
       },
       {

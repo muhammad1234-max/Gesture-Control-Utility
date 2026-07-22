@@ -66,7 +66,7 @@ export default function CalibrationWizard() {
         pinchThresholds: { left: pinchL, right: pinchR, scroll: pinchL }
       }
     });
-    setStep(3);
+    setStep(4);
     showToast('Calibration Applied', 'Your personalized settings have been saved.', 'success');
     CalibrationController.end();
   };
@@ -132,32 +132,47 @@ export default function CalibrationWizard() {
                 <div className="w-12 h-12 bg-white/5 text-[var(--color-text-secondary)] rounded-xl flex items-center justify-center">
                   <Hand className="w-6 h-6" />
                 </div>
-                <h3 className="text-h2">Pinch Sensitivity</h3>
+                <h3 className="text-h2">Step 2: Pinch Sensitivity</h3>
                 <p className="text-body text-sm">
-                  Hold your index finger and thumb together in a comfortable "click" position, then press Save. Repeat for your middle finger.
+                  Hold your Index + Thumb in a click position and click Index Pinch. Repeat for Middle + Thumb for Right Click.
                 </p>
                 <div className="flex gap-4 pt-4">
                   <button onClick={() => savePinch('left')} className="btn-secondary flex-1">
-                    Index Pinch
+                    Index Pinch (Left Click)
                   </button>
                   <button onClick={() => savePinch('right')} className="btn-secondary flex-1">
-                    Middle Pinch
+                    Middle Pinch (Right Click)
                   </button>
                 </div>
-                <button onClick={applyCalibration} className="btn-primary w-full mt-4">
-                  Apply & Finish
+                <button onClick={() => setStep(3)} className="btn-primary w-full mt-4">
+                  Next: Scroll & Zoom
                 </button>
               </div>
             )}
 
             {step === 3 && (
               <div className="animate-[var(--animate-native-fade)] space-y-4">
+                <div className="w-12 h-12 bg-white/5 text-[var(--color-text-secondary)] rounded-xl flex items-center justify-center">
+                  <Move className="w-6 h-6" />
+                </div>
+                <h3 className="text-h2">Step 3: Scroll & Zoom Mode</h3>
+                <p className="text-body text-sm">
+                  Extend your Index and Middle fingers together (Ring/Pinky folded) to engage <b>Smart Scroll</b>. Pinch Thumb toward Index to engage <b>Analog Zoom</b>.
+                </p>
+                <button onClick={applyCalibration} className="btn-primary w-full mt-4">
+                  Apply & Finish Calibration
+                </button>
+              </div>
+            )}
+
+            {step === 4 && (
+              <div className="animate-[var(--animate-native-fade)] space-y-4">
                 <div className="w-12 h-12 bg-[var(--color-primary)] text-white rounded-xl flex items-center justify-center shadow-[0_0_15px_var(--color-primary)] opacity-80">
                   <CheckCircle className="w-6 h-6" />
                 </div>
-                <h3 className="text-h2">Complete</h3>
+                <h3 className="text-h2">Calibration Complete</h3>
                 <p className="text-body text-sm">
-                  Your cursor mapping and click thresholds are customized.
+                  Your single-handed gesture mapping, workspace reach, and pinch thresholds have been calibrated.
                 </p>
                 <div className="flex gap-4 pt-4">
                   <button onClick={() => { setStep(0); CalibrationController.begin(); }} className="btn-secondary flex-1">

@@ -4,12 +4,15 @@ import { SYSTEM_CONSTANTS } from '@shared/constants';
 
 interface DiagnosticsState {
   logs: DiagnosticLog[];
+  timeline: string[];
   addLog: (message: string, type?: DiagnosticLog['type']) => void;
+  addTimelineEvent: (eventStr: string) => void;
   clearLogs: () => void;
 }
 
 export const useDiagnosticsStore = create<DiagnosticsState>((set) => ({
   logs: [],
+  timeline: [],
   addLog: (message, type = 'info') => {
     const timestamp = new Date().toLocaleTimeString();
     const newLog: DiagnosticLog = {
@@ -22,5 +25,12 @@ export const useDiagnosticsStore = create<DiagnosticsState>((set) => ({
       logs: [newLog, ...state.logs].slice(0, SYSTEM_CONSTANTS.MAX_LOG_HISTORY)
     }));
   },
-  clearLogs: () => set({ logs: [] })
+  addTimelineEvent: (eventStr) => {
+    const timestamp = new Date().toLocaleTimeString();
+    const formatted = `[${timestamp}] ${eventStr}`;
+    set((state) => ({
+      timeline: [formatted, ...state.timeline].slice(0, 100)
+    }));
+  },
+  clearLogs: () => set({ logs: [], timeline: [] })
 }));

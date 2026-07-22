@@ -1,16 +1,16 @@
 import { app, BrowserWindow, Tray, Menu, ipcMain } from 'electron';
-import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
+import * as fs from 'fs';
 import Store from 'electron-store';
+import { EngineManager } from './engine_manager';
 
 const store = new Store();
+const engineMgr = EngineManager.getInstance();
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
-let daemonProcess: ChildProcess | null = null;
-let daemonRestarts = 0;
-const MAX_RESTARTS = 3;
 let isShuttingDown = false;
+let electronBuildId = 'unknown';
 
 const isSingleInstance = app.requestSingleInstanceLock();
 if (!isSingleInstance) {
@@ -18,104 +18,13 @@ if (!isSingleInstance) {
   process.exit(0);
 }
 
-function sendDaemonCommand(action: string, payload?: any) {
-  if (daemonProcess && daemonProcess.stdin && !isShuttingDown) {
-    try {
-      daemonProcess.stdin.write(JSON.stringify({ action, payload }) + '\n');
-    } catch (e) {
-      console.error(`Failed to send ${action} to daemon`, e);
-    }
-  }
-}
-
-async function startDaemon() {
-  if (daemonProcess || isShuttingDown) return;
-
-  // Orphan Reaper: Enforce One Daemon Rule
-  await new Promise<void>((resolve) => {
-    const cmd = `powershell.exe -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object {$_.Name -match 'python' -and $_.CommandLine -match 'daemon.py'} | Stop-Process -Force -ErrorAction SilentlyContinue"`;
-    require('child_process').exec(cmd, { windowsHide: true }, () => resolve());
-  });
-
-  // Check again after async pause
-  if (daemonProcess || isShuttingDown) return;
-
-  const fs = require('fs');
-  const isPackaged = app.isPackaged;
-  
-  const venvPath = isPackaged 
-    ? path.join(process.resourcesPath, '.venv/Scripts/pythonw.exe')
-    : path.join(__dirname, '../../.venv/Scripts/pythonw.exe');
-    
-  const pythonPath = fs.existsSync(venvPath) ? venvPath : 'pythonw';
-  
-  const scriptPath = isPackaged
-    ? path.join(process.resourcesPath, 'backend/daemon/daemon.py')
-    : path.join(__dirname, '../../backend/daemon/daemon.py');
-
-  daemonProcess = spawn(pythonPath, [scriptPath, '0'], { windowsHide: true });
-  
-  if (daemonProcess && daemonProcess.stdout) {
-    daemonProcess.stdout.on('data', (data) => {
-      const text = data.toString();
-      const lines = text.split('\n');
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const parsed = JSON.parse(line);
-          if (parsed.event && mainWindow) {
-            mainWindow.webContents.send('ipc-broadcast', JSON.stringify({ type: parsed.event, payload: parsed.payload }));
-          }
-        } catch (e) {
-          // Not JSON
-        }
-      }
-    });
-  }
-
-  if (daemonProcess && daemonProcess.stderr) {
-    daemonProcess.stderr.on('data', (data) => {
-      console.error(`[Daemon Error] ${data.toString().trim()}`);
-    });
-  }
-
-  if (daemonProcess) {
-    daemonProcess.on('exit', (code, signal) => {
-      daemonProcess = null;
-      if (mainWindow && !isShuttingDown) {
-        mainWindow.webContents.send('ipc-broadcast', JSON.stringify({ type: 'ENGINE_DIED', payload: { code } }));
-      }
-    });
-  }
-}
-
 async function shutdownSequence() {
   if (isShuttingDown) return;
   isShuttingDown = true;
-  console.log('Initiating graceful shutdown...');
+  console.log('Initiating graceful application shutdown...');
   
-  if (daemonProcess && daemonProcess.stdin) {
-    try {
-      daemonProcess.stdin.write(JSON.stringify({ action: 'STOP_TRACKING' }) + '\n');
-      daemonProcess.stdin.write(JSON.stringify({ action: 'CLOSE_CAMERA' }) + '\n');
-      daemonProcess.stdin.write('SHUTDOWN\n');
-    } catch(e) {}
-
-    await new Promise<void>((resolve) => {
-      const timeout = setTimeout(() => {
-        console.warn('Daemon shutdown timeout exceeded. Force killing.');
-        if (daemonProcess) daemonProcess.kill('SIGKILL');
-        resolve();
-      }, 3000);
-
-      daemonProcess?.once('close', () => {
-        clearTimeout(timeout);
-        resolve();
-      });
-    });
-  }
+  await engineMgr.stopEngine();
   
-  daemonProcess = null;
   if (tray) {
     tray.destroy();
     tray = null;
@@ -144,6 +53,9 @@ function createWindow() {
     minHeight: 500,
     show: false,
     frame: false,
+    icon: app.isPackaged 
+      ? path.join(process.resourcesPath, 'public/tray-icon.ico')
+      : path.join(__dirname, '../../public/tray-icon.ico'),
     titleBarStyle: 'hidden',
     backgroundColor: '#111111',
     autoHideMenuBar: true,
@@ -153,6 +65,8 @@ function createWindow() {
       contextIsolation: false
     }
   });
+
+  engineMgr.setMainWindow(mainWindow);
 
   mainWindow.on('resize', () => {
     if (mainWindow) store.set('windowBounds', mainWindow.getBounds());
@@ -174,13 +88,29 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+    engineMgr.setMainWindow(null);
   });
 }
 
 app.on('ready', () => {
+  try {
+    const fpPath = app.isPackaged 
+      ? path.join(process.resourcesPath, 'public/fingerprint.json')
+      : path.join(__dirname, '../../public/fingerprint.json');
+    if (fs.existsSync(fpPath)) {
+      const fp = JSON.parse(fs.readFileSync(fpPath, 'utf8'));
+      electronBuildId = fp.BUILD_ID;
+      console.log(`[Electron Main] Build Fingerprint: ${electronBuildId}`);
+    }
+  } catch(e) {
+    console.warn('Could not read build fingerprint:', e);
+  }
+
   createWindow();
   
-  const iconPath = path.join(__dirname, '../../public/tray-icon.ico');
+  const iconPath = app.isPackaged 
+    ? path.join(process.resourcesPath, 'public/tray-icon.ico')
+    : path.join(__dirname, '../../public/tray-icon.ico');
   try {
     tray = new Tray(iconPath);
   } catch (e) {
@@ -191,6 +121,8 @@ app.on('ready', () => {
     const contextMenu = Menu.buildFromTemplate([
       { label: 'Show Dashboard', click: () => createWindow() },
       { type: 'separator' },
+      { label: 'Restart Engine', click: () => engineMgr.restartEngine() },
+      { type: 'separator' },
       { label: 'Quit', click: () => shutdownSequence() }
     ]);
     tray.setToolTip('Gesture Control Utility');
@@ -198,8 +130,6 @@ app.on('ready', () => {
     tray.on('double-click', () => createWindow());
   }
 
-  // Daemon will now only start when explicitly commanded by React UI
-  
   const startWithWindows = store.get('startWithWindows', false) as boolean;
   app.setLoginItemSettings({
     openAtLogin: startWithWindows,
@@ -212,7 +142,7 @@ app.on('second-instance', () => {
 });
 
 app.on('window-all-closed', () => {
-  // Overriding default behavior to prevent implicit quit. We handle it in window-close IPC.
+  // Overriding default behavior to prevent implicit quit.
 });
 
 app.on('before-quit', (e) => {
@@ -223,9 +153,6 @@ app.on('before-quit', (e) => {
 });
 
 // Window Controls
-ipcMain.on('log-to-main', (event, arg) => {
-  console.log(arg);
-});
 ipcMain.handle('window-minimize', () => {
   if (mainWindow) mainWindow.minimize();
 });
@@ -244,40 +171,32 @@ ipcMain.handle('window-close', () => {
   }
 });
 
-// Explicit Engine Commands
-  ipcMain.handle('START_ENGINE', () => {
-    startDaemon();
-  });
-ipcMain.handle('STOP_ENGINE', () => {
-  sendDaemonCommand('SHUTDOWN');
-});
+// Explicit Engine Commands via EngineManager Singleton
+ipcMain.handle('START_ENGINE', () => engineMgr.startEngine());
+ipcMain.handle('STOP_ENGINE', () => engineMgr.stopEngine());
+ipcMain.handle('RESTART_ENGINE', () => engineMgr.restartEngine());
 
-
-ipcMain.handle('OPEN_CAMERA', () => sendDaemonCommand('OPEN_CAMERA'));
-ipcMain.handle('CLOSE_CAMERA', () => sendDaemonCommand('CLOSE_CAMERA'));
-
-ipcMain.handle('START_TRACKING', () => sendDaemonCommand('START_TRACKING'));
-ipcMain.handle('STOP_TRACKING', () => sendDaemonCommand('STOP_TRACKING'));
-ipcMain.handle('CONFIG', (_event, value) => sendDaemonCommand('CONFIG', value));
-ipcMain.handle('CALIBRATION_MODE', (_event, value) => sendDaemonCommand('CALIBRATION_MODE', value));
+ipcMain.handle('OPEN_CAMERA', () => engineMgr.sendCommand('OPEN_CAMERA'));
+ipcMain.handle('CLOSE_CAMERA', () => engineMgr.sendCommand('CLOSE_CAMERA'));
+ipcMain.handle('START_TRACKING', () => engineMgr.sendCommand('START_TRACKING'));
+ipcMain.handle('STOP_TRACKING', () => engineMgr.sendCommand('STOP_TRACKING'));
+ipcMain.handle('CONFIG', (_event, value) => engineMgr.sendCommand('CONFIG', value));
+ipcMain.handle('CALIBRATION_MODE', (_event, value) => engineMgr.sendCommand('CALIBRATION_MODE', value));
+ipcMain.handle('SET_DRY_RUN', (_event, value) => engineMgr.sendCommand('SET_DRY_RUN', value));
+ipcMain.handle('START_VALIDATION_SESSION', () => engineMgr.sendCommand('START_VALIDATION_SESSION'));
+ipcMain.handle('STOP_VALIDATION_SESSION', () => engineMgr.sendCommand('STOP_VALIDATION_SESSION'));
 
 // Benchmark tools
-ipcMain.handle('START_RECORDING', () => sendDaemonCommand('START_RECORDING'));
-ipcMain.handle('STOP_RECORDING', () => sendDaemonCommand('STOP_RECORDING'));
-ipcMain.handle('START_REPLAY', () => sendDaemonCommand('START_REPLAY'));
-ipcMain.handle('STOP_REPLAY', () => sendDaemonCommand('STOP_REPLAY'));
+ipcMain.handle('START_RECORDING', () => engineMgr.sendCommand('START_RECORDING'));
+ipcMain.handle('STOP_RECORDING', () => engineMgr.sendCommand('STOP_RECORDING'));
+ipcMain.handle('START_REPLAY', () => engineMgr.sendCommand('START_REPLAY'));
+ipcMain.handle('STOP_REPLAY', () => engineMgr.sendCommand('STOP_REPLAY'));
 
-ipcMain.handle('GET_STATUS', () => {
-  if (!daemonProcess) {
-    if (mainWindow) {
-      mainWindow.webContents.send('ipc-broadcast', JSON.stringify({
-        type: 'ENGINE_STATUS',
-        payload: { pid: null, camera_open: false, tracking: false }
-      }));
-    }
-  } else {
-    sendDaemonCommand('GET_STATUS');
-  }
+ipcMain.handle('GET_FINGERPRINTS', () => {
+  return {
+    electron: electronBuildId,
+    python: 'daemon-v1'
+  };
 });
 
 ipcMain.handle('QUIT_APPLICATION', () => shutdownSequence());
@@ -291,19 +210,5 @@ ipcMain.handle('store-set', (_event, key, value) => {
       openAtLogin: value as boolean,
       path: app.getPath('exe')
     });
-  }
-});
-
-ipcMain.handle('start-daemon', () => startDaemon());
-ipcMain.handle('stop-daemon', () => sendDaemonCommand('SHUTDOWN'));
-ipcMain.handle('get-status', () => daemonProcess !== null);
-ipcMain.handle('send-daemon-command', (_event, payload) => {
-  try {
-    const cmd = JSON.parse(payload);
-    sendDaemonCommand(cmd.action, cmd.payload);
-  } catch {
-    if (daemonProcess && daemonProcess.stdin) {
-      daemonProcess.stdin.write(payload + '\n');
-    }
   }
 });

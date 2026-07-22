@@ -24,8 +24,8 @@ function SettingsApp() {
   }, [setConfigFromServer]);
 
   return (
-    <div className="bg-[#0c0e12] min-h-screen text-slate-200 font-sans p-8 overflow-y-auto">
-      <div className="max-w-4xl mx-auto">
+    <div className="bg-[#0c0e12] h-screen max-h-screen text-slate-200 font-sans p-8 overflow-y-auto">
+      <div className="max-w-4xl mx-auto space-y-8 pb-12">
         <h1 className="text-2xl font-semibold mb-6">Settings</h1>
         <SettingsView />
       </div>

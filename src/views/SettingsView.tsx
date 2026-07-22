@@ -7,12 +7,13 @@ import { ToggleSwitch } from '@components/ToggleSwitch';
 import { SettingsSlider } from '@components/SettingsSlider';
 import { EngineController, CameraController, TrackingController, ConfigurationController } from '@controllers';
 import { DeveloperPanel } from '@components/DeveloperPanel';
+import { ErrorBoundary } from '@components/ErrorBoundary';
 
 export default function SettingsView() {
   const config = useAppStore(state => state.config);
   const [devMode, setDevMode] = useState(false);
   const [startWithWindows, setStartWithWindows] = useState(false);
-  const [minimizeToTray, setMinimizeToTray] = useState(true);
+  const [minimizeToTray, setMinimizeToTray] = useState(false);
   const [engineStatus, setEngineStatus] = useState<any>({ pid: null, camera_open: false, tracking: false });
 
   useEffect(() => {
@@ -146,7 +147,9 @@ export default function SettingsView() {
             </div>
 
             {devMode && (
-              <DeveloperPanel />
+              <ErrorBoundary fallbackTitle="Developer Panel Exception">
+                <DeveloperPanel />
+              </ErrorBoundary>
             )}
           </div>
         </section>
