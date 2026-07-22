@@ -18,6 +18,11 @@ class MotionEngine:
         self.dy_ema = 0.0
         self.is_stationary = True
         
+        self.is_engaging = False
+        self.midas_active_until = 0.0
+        self.was_dragging = False
+        self.drop_stabilize_until = 0.0
+        
         self.get_screen_size = get_screen_size_func
 
     def get_alpha(self, cutoff, dt):
@@ -84,6 +89,27 @@ class MotionEngine:
         screen_w, screen_h = self.get_screen_size()
         raw_x_px = norm_x * screen_w * sensitivity
         raw_y_px = norm_y * screen_h * sensitivity
+        
+        t_curr = intent.timestamp
+        if intent.is_engaging:
+            if not self.is_engaging:
+                self.is_engaging = True
+                self.midas_active_until = t_curr + 0.150
+        else:
+            self.is_engaging = False
+
+        if intent.type == IntentType.DRAG:
+            self.was_dragging = True
+        elif self.was_dragging and intent.type != IntentType.DRAG:
+            self.was_dragging = False
+            if intent.type == IntentType.MOVE_CURSOR:
+                self.drop_stabilize_until = t_curr + 0.200
+
+        # Midas Touch & Drop Stabilization Freeze
+        if self.smoothed_x is not None:
+            if t_curr < self.midas_active_until or t_curr < self.drop_stabilize_until:
+                raw_x_px = self.smoothed_x
+                raw_y_px = self.smoothed_y
 
         # Update 1-Euro filter
         if self.smoothed_x is None:

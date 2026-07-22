@@ -12,14 +12,15 @@ class IntentType(Enum):
     IDLE = auto()
 
 class UserIntent:
-    __slots__ = ['type', 'raw_x', 'raw_y', 'pinch_distance', 'confidence', 'timestamp']
-    def __init__(self, type: IntentType, raw_x: float, raw_y: float, pinch_distance: float, confidence: float, timestamp: float):
+    __slots__ = ['type', 'raw_x', 'raw_y', 'pinch_distance', 'confidence', 'timestamp', 'is_engaging']
+    def __init__(self, type: IntentType, raw_x: float, raw_y: float, pinch_distance: float, confidence: float, timestamp: float, is_engaging: bool = False):
         self.type = type
         self.raw_x = raw_x
         self.raw_y = raw_y
         self.pinch_distance = pinch_distance
         self.confidence = confidence
         self.timestamp = timestamp
+        self.is_engaging = is_engaging
 
 class CommandType(Enum):
     MOVE_CURSOR = auto()

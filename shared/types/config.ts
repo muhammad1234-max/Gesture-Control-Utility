@@ -16,6 +16,7 @@ export interface AppConfig {
     autoStart: boolean;
     startMinimized: boolean;
   };
+  onboardingCompleted: boolean;
   camera: {
     deviceId: string | null;
     resolution: '720p' | '1080p';
@@ -64,6 +65,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     autoStart: false,
     startMinimized: false,
   },
+  onboardingCompleted: false,
   camera: {
     deviceId: null,
     resolution: '720p',

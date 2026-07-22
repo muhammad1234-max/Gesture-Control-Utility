@@ -6,27 +6,48 @@ import os
 # Add backend/daemon to sys.path so we can import modules
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'backend', 'daemon'))
 
-from interaction_manager import PriorityManager
-from modules.cursor_module import CursorModule
-from modules.click_module import ClickModule
-from modules.continuous_module import ContinuousModule
+from pipeline_types import IntentType, CommandType
+from gesture_engine import GestureEngine
+from motion_engine import MotionEngine
 
-class MockInputInjector:
+class MockMouseController:
     def __init__(self):
         self.events = []
-        
-    def execute_event(self, event):
-        self.events.append(event)
-        
-    def set_cursor_pos(self, x, y):
+    
+    def move_to(self, x, y):
         self.events.append({"action": "SET_CURSOR", "x": x, "y": y})
+    
+    def mouse_down(self, button):
+        self.events.append({"action": "MOUSE_DOWN", "button": button})
         
-    def velocity_callback(self, speed, is_zoom=False):
-        if speed is not None:
-            self.events.append({"action": "ZOOM" if is_zoom else "SCROLL", "speed": speed})
+    def mouse_up(self, button):
+        self.events.append({"action": "MOUSE_UP", "button": button})
         
-    def get_events(self):
-        return self.events
+    def scroll(self, amount):
+        self.events.append({"action": "SCROLL", "speed": amount})
+
+class MockActionExecutor:
+    def __init__(self, mouse):
+        self.mouse = mouse
+        self.is_left_down = False
+        
+    def execute(self, cmd):
+        if cmd.type == CommandType.MOVE_CURSOR:
+            self.mouse.move_to(cmd.x, cmd.y)
+        elif cmd.type == CommandType.LEFT_DOWN:
+            if not self.is_left_down:
+                self.mouse.mouse_down("left")
+                self.is_left_down = True
+            self.mouse.move_to(cmd.x, cmd.y)
+        elif cmd.type == CommandType.LEFT_UP:
+            if self.is_left_down:
+                self.mouse.mouse_up("left")
+                self.is_left_down = False
+            self.mouse.move_to(cmd.x, cmd.y)
+
+class MockConfig:
+    def __init__(self, state):
+        self.state = state
 
 def run_replay(filepath, playback_speed=1.0):
     with open(filepath, "r") as f:
@@ -35,37 +56,19 @@ def run_replay(filepath, playback_speed=1.0):
     print(f"--- Replaying: {data['name']} at {playback_speed}x ---")
     
     # Initialize Engine
-    injector = MockInputInjector()
-    manager = PriorityManager()
+    mouse = MockMouseController()
+    executor = MockActionExecutor(mouse)
+    gesture_engine = GestureEngine()
     
-    config = data.get("config", {})
-    state = {"smoothing": config.get("smoothing", 0.5), "prediction": config.get("prediction", 0.0)}
     def get_screen_size(): return (1920, 1080)
+    motion_engine = MotionEngine(get_screen_size)
     
-    def ldown(): injector.execute_event({"action": "MOUSE_DOWN", "button": "left"})
-    def lup(): injector.execute_event({"action": "MOUSE_UP", "button": "left"})
-    def rdown(): injector.execute_event({"action": "MOUSE_DOWN", "button": "right"})
-    def rup(): injector.execute_event({"action": "MOUSE_UP", "button": "right"})
-    
-    cursor_mod = CursorModule(manager, injector, state, get_screen_size) # Mock mouse as injector
-    left_mod = ClickModule("LEFT_CLICK", 50, manager, ldown, lup)
-    right_mod = ClickModule("RIGHT_CLICK", 50, manager, rdown, rup)
-    scroll_mod = ContinuousModule("SCROLL", 70, manager, injector, is_zoom=False)
-    zoom_mod = ContinuousModule("ZOOM", 80, manager, injector, is_zoom=True)
-    
-    manager.register_module(cursor_mod)
-    manager.register_module(left_mod)
-    manager.register_module(right_mod)
-    manager.register_module(scroll_mod)
-    manager.register_module(zoom_mod)
-    
-    # Apply Config
-    config = data.get("config", {})
-    # For now, we simulate config application manually, or pass config to modules
+    config_dict = data.get("config", {})
+    state = {"smoothing": config_dict.get("smoothing", 0.5), "prediction": config_dict.get("prediction", 0.0)}
+    config = MockConfig(state)
     
     # Metrics
     total_frames = len(data["frames"])
-    cursor_jitter = []
     latencies = []
     
     start_wall_time = time.time()
@@ -74,44 +77,41 @@ def run_replay(filepath, playback_speed=1.0):
         t_curr = frame["timestamp"] / 1000.0
         confidence = frame["confidence"]
         
-        # In a real replay, if playback_speed != 0 (e.g. not ASAP), we'd sleep.
-        # For CI testing, we usually want ASAP, so we ignore sleep unless requested.
-        
-        # Extract features (Normally MediaPipe)
-        # Thumb tip = 4, Index tip = 8, Middle tip = 12
         lm = frame["landmarks"]
         index_x, index_y = lm[8]["x"], lm[8]["y"]
         thumb_x, thumb_y = lm[4]["x"], lm[4]["y"]
         mid_x, mid_y = lm[12]["x"], lm[12]["y"]
         
         # Simple distance
-        dist_l = ((index_x - thumb_x)**2 + (index_y - thumb_y)**2)**0.5
-        dist_r = ((mid_x - thumb_x)**2 + (mid_y - thumb_y)**2)**0.5
-        hand_scale = 1.0 # Mocked
+        dist_i = ((index_x - thumb_x)**2 + (index_y - thumb_y)**2)**0.5
+        dist_m = ((mid_x - thumb_x)**2 + (mid_y - thumb_y)**2)**0.5
+        hand_scale = 1.0 
         
-        # Simulated Latency Waterfall tracking
         t_start = time.perf_counter()
         dt = 1.0 / data["camera_fps"]
         
-        manager.update_hand_presence(confidence > 0.5, t_curr)
+        tracking_data = {
+            "has_hand": confidence > 0.5,
+            "tracking_state": "TRACKING",
+            "raw_x": index_x,
+            "raw_y": index_y,
+            "dist_i": dist_i,
+            "dist_m": dist_m,
+            "hand_scale": hand_scale,
+            "confidence": confidence,
+            "t_curr": t_curr,
+            "zoom_pose": False,
+            "scroll_pose": False,
+            "conf_hist": [confidence]*5,
+            "env_penalty": 1.0
+        }
         
-        cursor_mod.process(index_x, index_y, dt, confidence, 0.0)
-        left_mod.process(hand_scale, dist_l, 0.0, [confidence]*5, t_curr, dt, 0.0)
-        right_mod.process(hand_scale, dist_r, 0.0, [confidence]*5, t_curr, dt, 0.0)
-        
-        conf_hist = [confidence]*5
-        scroll_mod.process(hand_scale, dist_r, index_x, index_y, 0.0, conf_hist, t_curr, dt)
-        zoom_mod.process(hand_scale, dist_l, index_x, index_y, 0.0, conf_hist, t_curr, dt)
-        
-        manager.arbitrate_and_execute(t_curr, dt)
+        intent = gesture_engine.detect_intent(tracking_data)
+        cmd = motion_engine.process(intent, config, 1.0, dt)
+        executor.execute(cmd)
         
         t_end = time.perf_counter()
         latencies.append((t_end - t_start) * 1000.0)
-        
-        # Jitter calculation (only when hand isn't meant to move)
-        if "idle" in data["name"]:
-            # Jitter = distance between consecutive smoothed cursor outputs
-            pass
             
     # Calculate Evaluation Score
     avg_lat = sum(latencies)/len(latencies) if latencies else 0
@@ -119,10 +119,9 @@ def run_replay(filepath, playback_speed=1.0):
     
     score = 100.0
     if avg_lat > 10.0:
-        score -= (avg_lat - 10.0) * 2 # Penalty for latency > 10ms
+        score -= (avg_lat - 10.0) * 2 
         
-    # Example assertions based on file intent
-    events = injector.get_events()
+    events = mouse.events
     if data["name"] == "perfect_click":
         clicks = [e for e in events if e["action"] == "MOUSE_DOWN"]
         if not clicks:
@@ -140,3 +139,4 @@ if __name__ == "__main__":
     for file in os.listdir(fixtures_dir):
         if file.endswith(".json"):
             run_replay(os.path.join(fixtures_dir, file))
+

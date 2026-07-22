@@ -92,14 +92,12 @@ class GestureIntentRecognizer:
         scroll_stab = round(wrist_stability, 1)
         scroll_reason = f"Index/Middle extended ({int(index_angle)}°/{int(middle_angle)}°), Ring/Pinky folded ({int(ring_angle)}°/{int(pinky_angle)}°)"
 
-        dist_thumb_ring_pip = dist_3d(thumb_tip, ring_pip) / (hand_scale / 0.1)
-
-        # E. ZOOM MODE (Index & Middle Extended PLUS Thumb touching Ring PIP/Finger)
-        zoom_touch_score = dist_thumb_ring_pip < 0.065
-        zoom_intent = 1.0 if (scroll_ext_score and zoom_touch_score) else 0.0
+        # E. ZOOM MODE (Closed Fist: All fingers folded)
+        fist_score = (index_angle < 120.0) and (middle_angle < 120.0) and (ring_angle < 120.0) and (pinky_angle < 120.0)
+        zoom_intent = 1.0 if fist_score else 0.0
         zoom_conf = round(zoom_intent * 98.0, 1) if zoom_intent > 0 else 1.0
         zoom_stab = round(wrist_stability, 1)
-        zoom_reason = f"Index/Middle extended + Thumb touching Ring finger/PIP ({dist_thumb_ring_pip:.3f})"
+        zoom_reason = f"All fingers folded ({int(index_angle)}°/{int(middle_angle)}°/{int(ring_angle)}°/{int(pinky_angle)}°)"
 
         return {
             "OPEN_HAND": {

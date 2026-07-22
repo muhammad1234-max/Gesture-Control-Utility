@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, memo } from 'react';
 
 interface HandVisualizerProps {
   landmarks?: { x: number; y: number }[];
@@ -6,7 +6,7 @@ interface HandVisualizerProps {
   height?: number;
 }
 
-export function HandVisualizer({ landmarks, width = 200, height = 200 }: HandVisualizerProps) {
+function HandVisualizerComponent({ landmarks, width = 200, height = 200 }: HandVisualizerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -63,3 +63,5 @@ export function HandVisualizer({ landmarks, width = 200, height = 200 }: HandVis
     />
   );
 }
+
+export const HandVisualizer = memo(HandVisualizerComponent);

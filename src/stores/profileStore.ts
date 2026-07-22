@@ -24,30 +24,43 @@ const DEFAULT_CALIBRATION: CalibrationSettings = {
 const DEFAULT_PROFILES: AppProfile[] = [
   {
     id: 'p1',
-    name: 'Media & Comfort Mode',
-    description: 'Optimal triggers configured for Netflix, Spotify, and system volume controls.',
+    name: 'Office (Default)',
+    description: 'Balanced movement for everyday browsing and productivity.',
     isDefault: true,
     gestures: [...DEFAULT_GESTURES],
-    calibration: { ...DEFAULT_CALIBRATION }
+    calibration: { ...DEFAULT_CALIBRATION, deadZone: 25, smoothing: 5 }
   },
   {
     id: 'p2',
-    name: 'Hands-Free Photoshop',
-    description: 'Tailored mappings for canvas rotation, zooming, brush changes, and command history.',
+    name: 'Presentation',
+    description: 'Slower cursor and higher stability for presenting slides.',
     isDefault: false,
-    gestures: [
-      { id: 'ps1', name: 'Undo Stroke', trigger: 'swipe-left', actionType: 'keystroke', targetAction: 'Ctrl + Z', isActive: true, confidenceThreshold: 85 },
-      { id: 'ps2', name: 'Redo Stroke', trigger: 'swipe-right', actionType: 'keystroke', targetAction: 'Ctrl + Shift + Z', isActive: true, confidenceThreshold: 85 },
-      { id: 'ps3', name: 'Increase Brush Size', trigger: 'swipe-up', actionType: 'keystroke', targetAction: ']', isActive: true, confidenceThreshold: 80 },
-      { id: 'ps4', name: 'Decrease Brush Size', trigger: 'swipe-down', actionType: 'keystroke', targetAction: '[', isActive: true, confidenceThreshold: 80 },
-      { id: 'ps5', name: 'Fit Canvas to Screen', trigger: 'circle', actionType: 'keystroke', targetAction: 'Ctrl + 0', isActive: true, confidenceThreshold: 90 }
-    ],
-    calibration: {
-      ...DEFAULT_CALIBRATION,
-      deadZone: 15,
-      smoothing: 7,
-      accelerationCurve: [0.1, 0.9, 0.2, 1.0]
-    }
+    gestures: [...DEFAULT_GESTURES],
+    calibration: { ...DEFAULT_CALIBRATION, deadZone: 40, smoothing: 8, accelerationCurve: [0.1, 0.5, 0.5, 1.0] }
+  },
+  {
+    id: 'p3',
+    name: 'Designer',
+    description: 'Higher precision and larger smoothing for creative work.',
+    isDefault: false,
+    gestures: [...DEFAULT_GESTURES],
+    calibration: { ...DEFAULT_CALIBRATION, deadZone: 15, smoothing: 7, accelerationCurve: [0.1, 0.9, 0.2, 1.0] }
+  },
+  {
+    id: 'p4',
+    name: 'Accessibility',
+    description: 'Lower fatigue and higher gesture tolerance.',
+    isDefault: false,
+    gestures: [...DEFAULT_GESTURES],
+    calibration: { ...DEFAULT_CALIBRATION, minConfidence: 60, deadZone: 30, smoothing: 6, accelerationCurve: [0.3, 0.2, 0.3, 1.0] }
+  },
+  {
+    id: 'p5',
+    name: 'Gaming (Experimental)',
+    description: 'Lower latency and minimal smoothing.',
+    isDefault: false,
+    gestures: [...DEFAULT_GESTURES],
+    calibration: { ...DEFAULT_CALIBRATION, deadZone: 10, smoothing: 1, accelerationCurve: [0.5, 0.1, 0.8, 1.0] }
   }
 ];
 

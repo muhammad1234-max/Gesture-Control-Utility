@@ -206,6 +206,7 @@ class GestureEngine:
         self.scroll = ContinuousStateMachine("SCROLL")
         self.zoom = ContinuousStateMachine("ZOOM")
         self.is_dragging = False
+        self.last_hand_time = 0.0
 
     def detect_intent(self, tracking_data, legacy_manager=None, mock_mouse=None) -> UserIntent:
         """
@@ -226,18 +227,28 @@ class GestureEngine:
         conf_hist = tracking_data.get("conf_hist", [])
         env_penalty = tracking_data.get("env_penalty", 1.0)
         
-        if not has_hand:
-            self.left_click._change_state(ClickState.IDLE, t_curr)
-            self.left_click.is_pressed = False
-            self.right_click._change_state(ClickState.IDLE, t_curr)
-            self.right_click.is_pressed = False
-            self.scroll.is_active = False
-            self.scroll.state_enter_time = 0.0
-            self.zoom.is_active = False
-            self.zoom.state_enter_time = 0.0
-            self.is_dragging = False
-            return UserIntent(IntentType.NO_HAND, raw_x, raw_y, dist_i, confidence, t_curr)
-            
+        if has_hand:
+            self.last_hand_time = t_curr
+        else:
+            time_since_hand = (t_curr - self.last_hand_time) * 1000.0
+            if time_since_hand <= 300.0 and (self.is_dragging or self.scroll.is_active or self.zoom.is_active):
+                # Extrapolate: prevent clicks from triggering due to 0 distance
+                dist_i = 1.0
+                dist_m = 1.0
+                scroll_pose = False
+                zoom_pose = False
+                confidence = 0.0
+            else:
+                self.left_click._change_state(ClickState.IDLE, t_curr)
+                self.left_click.is_pressed = False
+                self.right_click._change_state(ClickState.IDLE, t_curr)
+                self.right_click.is_pressed = False
+                self.scroll.is_active = False
+                self.scroll.state_enter_time = 0.0
+                self.zoom.is_active = False
+                self.zoom.state_enter_time = 0.0
+                self.is_dragging = False
+                return UserIntent(IntentType.NO_HAND, raw_x, raw_y, dist_i, confidence, t_curr)
         if tracking_state == "WARMING_UP":
             return UserIntent(IntentType.IDLE, raw_x, raw_y, dist_i, confidence, t_curr)
 
@@ -270,9 +281,22 @@ class GestureEngine:
         # INDEPENDENT MODE: Use internal state machines only
         # =====================================================================
 
+        # Block right click if peace sign is active or engaging to prevent accidental clicks
+        if scroll_pose or self.scroll.is_active:
+            self.right_click._change_state(ClickState.IDLE, t_curr)
+            self.right_click.is_pressed = False
+            dist_m = 1.0
+
         # Step 1: Feed all state machines (mirrors daemon.py processing order)
         self.left_click.process(hand_scale, dist_i, conf_hist, t_curr, env_penalty)
         self.right_click.process(hand_scale, dist_m, conf_hist, t_curr, env_penalty)
+        
+        # Extend grace period for ZOOM if confidence drops (e.g., due to fist obscuring landmarks)
+        if self.zoom.is_active and confidence < 0.7:
+            self.zoom.GRACE_MS = 300.0
+        else:
+            self.zoom.GRACE_MS = 180.0
+            
         self.scroll.process_pose(scroll_pose, confidence, t_curr)
         self.zoom.process_pose(zoom_pose, confidence, t_curr)
         
@@ -298,7 +322,8 @@ class GestureEngine:
             self.is_dragging = False
             intent_type = IntentType.MOVE_CURSOR
 
-        return UserIntent(intent_type, raw_x, raw_y, dist_i, confidence, t_curr)
+        is_engaging = (self.left_click.state == ClickState.ENGAGING)
+        return UserIntent(intent_type, raw_x, raw_y, dist_i, confidence, t_curr, is_engaging=is_engaging)
 
 
 # =============================================================================

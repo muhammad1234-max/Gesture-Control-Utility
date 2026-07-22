@@ -6,7 +6,6 @@ import time
 import ctypes
 import json
 import math
-import psutil
 
 from mouse_controller import MouseController
 from camera import CameraStream
@@ -20,6 +19,14 @@ from environment_monitor import EnvironmentMonitor
 from hardware_profiler import HardwareProfiler
 from gesture_registry import GestureRegistry
 from gesture_intent import GestureIntentRecognizer as IntentRecognizer
+from reliability_engine import ReliabilityEngine
+
+from context import SystemContext
+from ipc_emitter import IPCEmitter
+from logger import system_logger
+from health_manager import HealthState, Subsystem
+from feature_flags import FeatureFlags
+from version import get_version_info
 
 
 
@@ -37,6 +44,7 @@ class CameraStream:
         if self.cap is not None:
             self.cap.release()
         self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         self.cap.set(cv2.CAP_PROP_FPS, 30)
@@ -55,7 +63,8 @@ class CameraStream:
             self.cap = None
 
 def main():
-    stream = CameraStream()
+    ctx = SystemContext(get_screen_size)
+    stream = ctx.camera
     hands = None
     
     state = {
@@ -90,7 +99,7 @@ def main():
                 cmd = json.loads(line)
                 action = cmd.get("action")
                 
-                print(json.dumps({"event": "INFO", "message": f"Executing: {action}"}), flush=True)
+                IPCEmitter.emit("INFO", f"Executing: {action}")
                 
                 if action == "CONFIG":
                     payload = cmd.get("payload", {})
@@ -99,52 +108,49 @@ def main():
                     if "pinch_threshold" in payload: state["pinch_threshold"] = payload["pinch_threshold"]
                     if "camera_id" in payload: state["camera_id"] = payload["camera_id"]
                     if "calibration" in payload: state["calibration"] = payload["calibration"]
-                    print(json.dumps({"event": "CONFIG_APPLIED"}), flush=True)
+                    IPCEmitter.emit("CONFIG_APPLIED")
                     
                 elif action == "CALIBRATION_MODE":
                     is_calibration = cmd.get("payload", False)
                     state["calibration_mode"] = is_calibration
-                    print(json.dumps({"event": "CALIBRATION_MODE_ENABLED" if is_calibration else "CALIBRATION_MODE_DISABLED"}), flush=True)
+                    IPCEmitter.emit("CALIBRATION_MODE_ENABLED" if is_calibration else "CALIBRATION_MODE_DISABLED")
                     
                 elif action == "OPEN_CAMERA":
                     if not stream.open(state["camera_id"]):
-                        print(json.dumps({"event": "ERROR", "payload": "Failed to open camera"}), flush=True)
+                        IPCEmitter.emit("ERROR", "Failed to open camera")
                     else:
-                        print(json.dumps({"event": "CAMERA_OPENED"}), flush=True)
+                        IPCEmitter.emit("CAMERA_OPENED")
                         
                 elif action == "CLOSE_CAMERA":
                     stream.close()
-                    print(json.dumps({"event": "CAMERA_CLOSED"}), flush=True)
+                    IPCEmitter.emit("CAMERA_CLOSED")
                     
                 elif action == "START_TRACKING":
                     state["tracking"] = True
-                    print(json.dumps({"event": "TRACKING_STARTED"}), flush=True)
+                    IPCEmitter.emit("TRACKING_STARTED")
                     
                 elif action == "STOP_TRACKING":
                     state["tracking"] = False
-                    print(json.dumps({"event": "TRACKING_STOPPED"}), flush=True)
+                    IPCEmitter.emit("TRACKING_STOPPED")
                     
                 elif action == "GET_STATUS":
-                    print(json.dumps({
-                        "event": "ENGINE_STATUS",
-                        "payload": {
-                            "pid": os.getpid(),
-                            "camera_open": stream.cap is not None,
-                            "tracking": state["tracking"]
-                        }
-                    }), flush=True)
+                    IPCEmitter.emit("ENGINE_STATUS", {
+                        "pid": os.getpid(),
+                        "camera_open": stream.cap is not None,
+                        "tracking": state["tracking"]
+                    })
 
                 elif action == "START_RECORDING":
                     state["recording"] = True
                     state["recorded_frames"] = []
-                    print(json.dumps({"event": "RECORDING_STARTED"}), flush=True)
+                    IPCEmitter.emit("RECORDING_STARTED")
 
                 elif action == "STOP_RECORDING":
                     state["recording"] = False
                     path = cmd.get("payload", "replay.json")
                     with open(path, "w") as f:
                         json.dump(state["recorded_frames"], f)
-                    print(json.dumps({"event": "RECORDING_SAVED", "payload": path}), flush=True)
+                    IPCEmitter.emit("RECORDING_SAVED", path)
 
                 elif action == "START_REPLAY":
                     path = cmd.get("payload", "replay.json")
@@ -154,9 +160,9 @@ def main():
                         state["replay_idx"] = 0
                         state["replaying"] = True
                         state["tracking"] = True
-                        print(json.dumps({"event": "REPLAY_STARTED"}), flush=True)
+                        IPCEmitter.emit("REPLAY_STARTED")
                     else:
-                        print(json.dumps({"event": "ERROR", "payload": "Replay file not found"}), flush=True)
+                        IPCEmitter.emit("ERROR", "Replay file not found")
 
             except Exception as e:
                 pass
@@ -169,27 +175,32 @@ def main():
     fps_start_time = time.time()
     fps_frames = 0
     fps = 0
+    camera_failures = 0
     
-    
-    # Pipeline Setup
-    mouse = MouseController()
-    action_executor = ActionExecutor(mouse)
-    config = BackendConfig()
+    # Pipeline Setup via SystemContext
+    mouse = ctx.mouse
+    action_executor = ctx.action
+    config = ctx.config
     config.state = state
     
-    tracker = HandTracker()
+    tracking_data = {}
     
+    tracker = ctx.tracker
     registry = GestureRegistry()
+    intent_recognizer = IntentRecognizer()
 
-    gesture_engine = GestureEngine()
-    motion_engine = MotionEngine(get_screen_size)
+    gesture_engine = ctx.gesture
+    motion_engine = ctx.motion
+    reliability_engine = ctx.reliability
     
     env_monitor = EnvironmentMonitor()
     val_reporter = ValidationReporter()
     
-    print(json.dumps({"event": "ENGINE_STARTED"}), flush=True)
-    print(json.dumps({"event": "SELF_TEST_RESULT", "payload": {"status": "ok"}}), flush=True)
-    print(json.dumps({"event": "PYTHON_BUILD_ID", "payload": "1784743437055-b577eae"}), flush=True)
+    IPCEmitter.emit("ENGINE_STARTED")
+    IPCEmitter.emit("SELF_TEST_RESULT", {"status": "ok"})
+    
+    version_info = get_version_info()
+    IPCEmitter.emit("PYTHON_BUILD_ID", f"{version_info['app_version']}-{version_info['commit_hash']}")
     
     try:
 
@@ -209,11 +220,13 @@ def main():
                 
             has_hand = False
             index_x, index_y = 0, 0
-            dist_i, dist_m, dist_r = 0, 0, 0
+            dist_i, dist_m = 0, 0
             closing_i, closing_m, closing_r = 0, 0, 0
             hand_scale = 0.1
             landmarks = []
             confidence = 0.0
+            zoom_pose = False
+            scroll_pose = False
             
             t_inference_start = time.perf_counter()
             
@@ -225,25 +238,41 @@ def main():
                     index_y = frame_data["y"]
                     dist_i = frame_data["dist_l"]
                     dist_m = frame_data["dist_r"]
-                    dist_r = frame_data["dist_s"]
                     landmarks = frame_data.get("landmarks", [])
+                    
+                    if landmarks:
+                        intents = intent_recognizer.evaluate(landmarks, hand_scale)
+                        zoom_pose = intents["ZOOM"]["intent_score"] > 0
+                        scroll_pose = intents["SCROLL"]["intent_score"] > 0
                     confidence = 1.0
                     has_hand = True
                     time.sleep(1/30.0)
                 else:
                     state["replaying"] = False
-                    print(json.dumps({"event": "REPLAY_STOPPED"}), flush=True)
-                    manager.emergency_recover()
+                    IPCEmitter.emit("REPLAY_STOPPED")
                     continue
             else:
                 tracker.start()
                 
+                t_cam_start = time.perf_counter()
                 success, rgb = stream.read()
-                t_cam = time.perf_counter()
+                t_cam_end = time.perf_counter()
+                t_cam = t_cam_end - t_cam_start
                 
                 if not success or rgb is None:
-                    time.sleep(0.01)
+                    camera_failures += 1
+                    if camera_failures > 30: # Approx 1s timeout
+                        ctx.health.set_state(Subsystem.CAMERA, HealthState.ERROR)
+                        IPCEmitter.emit("ERROR", {"code": "CAMERA_DISCONNECTED", "message": "Camera failed to read repeatedly. Auto-recovery failed."})
+                        state["tracking"] = False
+                        stream.close()
+                        camera_failures = 0
+                    else:
+                        time.sleep(0.03)
                     continue
+                
+                camera_failures = 0
+                ctx.health.set_state(Subsystem.CAMERA, HealthState.READY)
                 
                 fps_frames += 1
                 if time.time() - fps_start_time >= 1.0:
@@ -271,7 +300,6 @@ def main():
                 
                     dist_i = dist(index, thumb)
                     dist_m = dist(middle, thumb)
-                    dist_r = dist(ring, thumb)
                     
                     index_x = index.x
                     index_y = index.y
@@ -283,11 +311,15 @@ def main():
                             "y": index_y,
                             "dist_l": dist_i,
                             "dist_r": dist_m,
-                            "dist_s": dist_r,
                             "landmarks": landmarks
                         })
+                    
+                    intents = intent_recognizer.evaluate(landmarks, hand_scale)
+                    zoom_pose = intents["ZOOM"]["intent_score"] > 0
+                    scroll_pose = intents["SCROLL"]["intent_score"] > 0
 
             t_inference_end = time.perf_counter()
+            t_tracker = t_inference_end - t_inference_start
 
             if has_hand:
                 conf_hist.append(confidence)
@@ -306,114 +338,125 @@ def main():
             t_inference_end = time.perf_counter()
             env_penalty = env_monitor.update(rgb) if (rgb is not None and fps_frames % 30 == 0) else env_monitor.average_brightness / 255.0
 
-            tracking_data = {
+            tracking_data.update({
                 "has_hand": has_hand,
                 "tracking_state": tracking_state_label,
                 "raw_x": index_x,
                 "raw_y": index_y,
                 "dist_i": dist_i,
                 "dist_m": dist_m,
-                "dist_s": dist_r,
                 "hand_scale": hand_scale,
                 "confidence": confidence,
                 "t_curr": t_curr,
-                "zoom_pose": False, # calculated internally if needed
-                "scroll_pose": False,
+                "zoom_pose": zoom_pose,
+                "scroll_pose": scroll_pose,
                 "conf_hist": conf_hist,
-                "env_penalty": env_penalty
-            }
+                "env_penalty": env_penalty,
+                "landmarks": landmarks
+            })
+
+            t_filter_start = time.perf_counter()
+            validated_data = reliability_engine.process(tracking_data, dt)
+            t_reliability = time.perf_counter() - t_filter_start
+            validated_dict = validated_data.to_dict()
 
             try:
-                if has_hand:
+                v_has_hand = validated_dict["has_hand"]
+                if v_has_hand:
                     if not state.get("hand_detected", False):
                         state["hand_detected"] = True
-                        print(json.dumps({"event": "HAND_DETECTED", "payload": True}), flush=True)
+                        IPCEmitter.emit("HAND_DETECTED", True)
                         
                     if state.get("calibration_mode", False):
                         t_end = time.perf_counter()
                         pass
                     else:
-                        new_intent = gesture_engine.detect_intent(tracking_data)
-                        action_cmd = motion_engine.process(new_intent, config, env_penalty, dt)
-                        action_executor.execute(action_cmd)
+                        t_gest_start = time.perf_counter()
+                        new_intent = gesture_engine.detect_intent(validated_dict)
+                        t_gest = time.perf_counter() - t_gest_start
                         
+                        t_mot_start = time.perf_counter()
+                        action_cmd = motion_engine.process(new_intent, config, env_penalty, dt)
+                        t_mot = time.perf_counter() - t_mot_start
+                        
+                        t_act_start = time.perf_counter()
+                        action_executor.execute(action_cmd)
+                        t_act = time.perf_counter() - t_act_start
                 else:
                     if state.get("hand_detected", False):
                         state["hand_detected"] = False
-                        print(json.dumps({"event": "HAND_DETECTED", "payload": False}), flush=True)
-                    
-                    new_intent = gesture_engine.detect_intent(tracking_data)
-                    action_cmd = motion_engine.process(new_intent, config, env_penalty, dt)
-                    action_executor.execute(action_cmd)
+                        IPCEmitter.emit("HAND_DETECTED", False)
 
             except Exception as ex:
                 import traceback
-                print(json.dumps({"event": "MODULE_EXCEPTION", "module": "ProcessingLoop", "trace": traceback.format_exc()}), flush=True)
+                IPCEmitter.emit("MODULE_EXCEPTION", {"module": "ProcessingLoop", "trace": traceback.format_exc()})
 
             t_end = time.perf_counter()
 
             
             if has_hand:
-                try:
-                    cpu = psutil.cpu_percent(interval=None)
-                    ram = psutil.Process().memory_info().rss / 1024 / 1024
-                except:
-                    cpu, ram = 0, 0
-                    
                 active_name = new_intent.type.name if "new_intent" in locals() and new_intent else "NONE"
                 
-                print(json.dumps({
-                    "event": "TELEMETRY",
-                    "payload": {
-                        "x": index_x,
-                        "y": index_y,
-                        "dist_l": dist_i,
-                        "dist_r": dist_m,
-                        "dist_s": dist_r,
-                        "fps": fps,
-                        "landmarks": landmarks,
-                        "metrics": {
-                            "t_inference_ms": (t_inference_end - t_inference_start) * 1000,
-                            "t_filter_ms": (t_end - t_filter_start) * 1000,
-                            "total_ms": (t_end - t_start) * 1000,
-                            "cpu": cpu,
-                            "ram_mb": ram
-                        },
-                        
-                        "subsystems": {
-                            "engine": "READY",
-                            "camera": "READY" if state.get("camera_id") is not None else "DISCONNECTED",
-                            "tracking": tracking_state_label
-                        },
-                        "intent_matrix": {},
-                        "active_intent": active_name
-
-                    }
-                }), flush=True)
+                IPCEmitter.emit("TELEMETRY", {
+                    "x": validated_dict["raw_x"],
+                    "y": validated_dict["raw_y"],
+                    "dist_l": validated_dict["dist_i"],
+                    "dist_r": validated_dict["dist_m"],
+                    "pose_peace": validated_dict["scroll_pose"],
+                    "pose_fist": validated_dict["zoom_pose"],
+                    "fps": fps,
+                    "landmarks": validated_dict["landmarks"],
+                    "metrics": {
+                        "t_cam_ms": t_cam * 1000 if 't_cam' in locals() else 0,
+                        "t_tracker_ms": t_tracker * 1000 if 't_tracker' in locals() else 0,
+                        "t_reliability_ms": t_reliability * 1000 if 't_reliability' in locals() else 0,
+                        "t_gesture_ms": t_gest * 1000 if 't_gest' in locals() else 0,
+                        "t_motion_ms": t_mot * 1000 if 't_mot' in locals() else 0,
+                        "t_action_ms": t_act * 1000 if 't_act' in locals() else 0,
+                        "total_ms": (time.perf_counter() - t_start) * 1000
+                    },
+                    "frame_quality": validated_dict.get("frame_quality", 0.0),
+                    "tracking_quality": validated_dict.get("reliability_score", 0.0),
+                    "reliability_flags": validated_dict.get("reliability_flags", []),
+                    "subsystems": {
+                        "engine": "READY",
+                        "camera": "READY" if state.get("camera_id") is not None else "DISCONNECTED",
+                        "tracking": validated_dict["tracking_state"]
+                    },
+                    "intent_matrix": {},
+                    "active_intent": active_name
+                })
 
     
             # Periodic 1.0s Heartbeat
             if 'last_heartbeat_t' not in locals(): last_heartbeat_t = t_start
             if (t_curr - last_heartbeat_t) >= 1.0:
                 last_heartbeat_t = t_curr
-                print(json.dumps({
-                    "event": "HEARTBEAT",
-                    "payload": {
-                        "cpu": cpu if 'cpu' in locals() else 0,
-                        "ram_mb": ram if 'ram' in locals() else 0,
-                        "fps": round(fps, 1),
-                        "camera_open": state.get("camera_id") is not None,
-                        "tracking": state.get("tracking", False),
-                        "uptime_sec": int(t_curr - t_start),
-                        "frame_latency_ms": round((t_end - t_start) * 1000.0, 2)
-                    }
-                }), flush=True)
+                try:
+                    import psutil
+                    hb_cpu = psutil.cpu_percent(interval=None)
+                    hb_ram = psutil.Process().memory_info().rss / 1024 / 1024
+                except:
+                    hb_cpu, hb_ram = 0, 0
+
+                IPCEmitter.emit("HEARTBEAT", {
+                    "cpu": hb_cpu,
+                    "ram_mb": hb_ram,
+                    "fps": round(fps, 1),
+                    "camera_open": state.get("camera_id") is not None,
+                    "tracking": state.get("tracking", False),
+                    "uptime_sec": int(t_curr - t_start),
+                    "frame_latency_ms": round((t_end - t_start) * 1000.0, 2)
+                })
 
     finally:
-        print(json.dumps({"event": "INFO", "message": "Executing ordered shutdown"}), flush=True)
+        IPCEmitter.emit("INFO", "Executing ordered shutdown")
         try: action_executor.stop()
         except: pass
-        print("Daemon shutdown complete.", file=sys.stderr, flush=True)
+        try: stream.close()
+        except: pass
+        system_logger.info("Daemon shutdown complete.")
+        sys.exit(0)
 
 
 if __name__ == "__main__":

@@ -8,12 +8,15 @@ export type TabId = 'dashboard' | 'gestures' | 'settings';
 interface AppState {
   activeTab: TabId;
   setActiveTab: (tab: TabId) => void;
-  toast: { id: string; title: string; message: string; type: 'success' | 'warn' } | null;
-  showToast: (title: string, message: string, type: 'success' | 'warn') => void;
+  toast: { id: string; title: string; message: string; type: 'success' | 'warn' | 'info' } | null;
+  showToast: (title: string, message: string, type: 'success' | 'warn' | 'info') => void;
   clearToast: (id: string) => void;
   
   calibrationOpen: boolean;
   setCalibrationOpen: (open: boolean) => void;
+  
+  onboardingOpen: boolean;
+  setOnboardingOpen: (open: boolean) => void;
   
   // Phase 7 config state
   config: AppConfig;
@@ -31,6 +34,8 @@ export const useAppStore = create<AppState>((set) => ({
   setActiveTab: (tab) => set({ activeTab: tab }),
   calibrationOpen: false,
   setCalibrationOpen: (open) => set({ calibrationOpen: open }),
+  onboardingOpen: false,
+  setOnboardingOpen: (open) => set({ onboardingOpen: open }),
   toast: null,
   showToast: (title, message, type) => {
     const id = Math.random().toString(36).substring(7);
@@ -56,8 +61,12 @@ export const useAppStore = create<AppState>((set) => ({
     const savedConfig = await IPCClient.storeGet('appConfig');
     if (savedConfig) {
       set({ config: savedConfig });
+      if (!savedConfig.onboardingCompleted) {
+        set({ onboardingOpen: true });
+      }
     } else {
       IPCClient.storeSet('appConfig', DEFAULT_CONFIG);
+      set({ onboardingOpen: true });
     }
   }
 }));

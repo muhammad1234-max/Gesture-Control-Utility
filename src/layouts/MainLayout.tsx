@@ -6,6 +6,10 @@ import GesturesView from '@views/GesturesView';
 import CalibrationWizard from '@components/CalibrationWizard';
 import { GestureFeedbackOverlay } from '@components/GestureFeedbackOverlay';
 import { DiagnosticsPanel } from '@components/DiagnosticsPanel';
+import { ToastManager } from '@components/ToastManager';
+import { OnboardingWizard } from '@components/OnboardingWizard';
+import { useSmartNotifications } from '@hooks/useSmartNotifications';
+import { useSessionStatistics } from '@hooks/useSessionStatistics';
 import { ErrorBoundary } from '@components/ErrorBoundary';
 import { useAppStore } from '@stores/appStore';
 import { useTelemetryStore } from '@stores/telemetryStore';
@@ -19,6 +23,7 @@ export default function MainLayout() {
   const initializeStore = useAppStore(state => state.initializeStore);
   const config = useAppStore(state => state.config);
   const calibrationOpen = useAppStore(state => state.calibrationOpen);
+  const onboardingOpen = useAppStore(state => state.onboardingOpen);
   const showToast = useAppStore(state => state.showToast);
   
   const setEngineActive = useTelemetryStore(state => state.setEngineActive);
@@ -30,6 +35,9 @@ export default function MainLayout() {
   const engineState = useEngineStore(state => state.engineState);
   const statusMessage = useEngineStore(state => state.statusMessage);
   const milestones = useEngineStore(state => state.milestones);
+
+  useSmartNotifications();
+  useSessionStatistics();
 
   useEffect(() => {
     IPCClient.connect();
@@ -184,7 +192,9 @@ export default function MainLayout() {
       </div>
       
       {calibrationOpen && <CalibrationWizard />}
+      {onboardingOpen && <OnboardingWizard />}
       <GestureFeedbackOverlay />
+      <ToastManager />
       <ErrorBoundary fallbackTitle="Diagnostics Panel Exception">
         <DiagnosticsPanel />
       </ErrorBoundary>

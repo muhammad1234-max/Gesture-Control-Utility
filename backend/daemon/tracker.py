@@ -1,12 +1,14 @@
-import mediapipe as mp
-
 class HandTracker:
     def __init__(self):
-        self.mp_hands = mp.solutions.hands
+        self.mp_hands = None
         self.hands = None
 
     def start(self):
         if self.hands is None:
+            if self.mp_hands is None:
+                import mediapipe as mp
+                self.mp_hands = mp.solutions.hands
+            
             self.hands = self.mp_hands.Hands(
                 static_image_mode=False,
                 max_num_hands=1,
