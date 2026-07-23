@@ -5,6 +5,20 @@ import Store from 'electron-store';
 import { EngineManager } from './engine_manager';
 
 const store = new Store();
+
+// MIGRATION: Restore comfortable workspace defaults
+const storedConfig = store.get('appConfig') as any;
+if (storedConfig?.calibration?.workingArea) {
+  const wa = storedConfig.calibration.workingArea;
+  if ((wa.minX === 0.0 && wa.maxX === 1.0 && wa.minY === 0.0 && wa.maxY === 1.0) || 
+      (wa.minX === 0.2 && wa.maxX === 0.8 && wa.minY === 0.2 && wa.maxY === 0.8) ||
+      (wa.minX === 0.2 && wa.maxX === 0.8 && wa.minY === 0.2 && wa.maxY === 0.7)) {
+    // Reset to tighter 0.3-0.7 frame for easy corner access
+    storedConfig.calibration.workingArea = { minX: 0.3, maxX: 0.7, minY: 0.3, maxY: 0.7 };
+    store.set('appConfig', storedConfig);
+  }
+}
+
 const engineMgr = EngineManager.getInstance();
 
 let mainWindow: BrowserWindow | null = null;
@@ -21,16 +35,26 @@ if (!isSingleInstance) {
 async function shutdownSequence() {
   if (isShuttingDown) return;
   isShuttingDown = true;
-  console.log('Initiating graceful application shutdown...');
+  
+  const logFile = path.join(app.getPath('userData'), 'logs', 'main.log');
+  const writeLog = (msg: string) => {
+      console.log(msg);
+      try { fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${msg}\n`); } catch(e) {}
+  };
+  
+  writeLog('Initiating graceful application shutdown...');
+  writeLog('[Shutdown Audit] Step 1: Stopping Engine...');
   
   await engineMgr.stopEngine();
   
+  writeLog('[Shutdown Audit] Step 2: Destroying Tray...');
   if (tray) {
     tray.destroy();
     tray = null;
   }
   
-  app.quit();
+  writeLog('[Shutdown Audit] Step 3: Triggering app.exit(0)...');
+  app.exit(0);
 }
 
 function createWindow() {
@@ -105,6 +129,19 @@ app.on('ready', () => {
   } catch(e) {
     console.warn('Could not read build fingerprint:', e);
   }
+  
+  const logFile = path.join(app.getPath('userData'), 'logs', 'main.log');
+  const writeLog = (msg: string) => {
+      console.log(msg);
+      try { fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${msg}\n`); } catch(e) {}
+  };
+
+  writeLog('--- RUNTIME VERIFICATION AUDIT ---');
+  writeLog(`Executable Path: ${process.execPath}`);
+  writeLog(`Current Working Directory: ${process.cwd()}`);
+  writeLog(`App Data Directory: ${app.getPath('userData')}`);
+  writeLog(`Build ID: ${electronBuildId}`);
+  writeLog('----------------------------------');
 
   createWindow();
   

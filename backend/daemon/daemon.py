@@ -21,6 +21,9 @@ from gesture_registry import GestureRegistry
 from gesture_intent import GestureIntentRecognizer as IntentRecognizer
 from reliability_engine import ReliabilityEngine
 
+from diagnostic_buffer import diag_buffer
+from diagnostic_collector import collect_diagnostics
+
 from context import SystemContext
 from ipc_emitter import IPCEmitter
 from logger import system_logger
@@ -31,6 +34,10 @@ from version import get_version_info
 
 
 def get_screen_size():
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
     return ctypes.windll.user32.GetSystemMetrics(0), ctypes.windll.user32.GetSystemMetrics(1)
 
 def dist(lm1, lm2):
@@ -81,9 +88,12 @@ def main():
         "recorded_frames": [],
         "replaying": False,
         "replay_frames": [],
-        "replay_idx": 0
+        "replay_idx": 0,
+        "force_move_only": False
     }
     
+    system_logger.info(f"[Startup Audit] Effective force_move_only: {state['force_move_only']}")
+
     def listen_for_commands():
         while state["running"]:
             line = sys.stdin.readline()
@@ -98,16 +108,46 @@ def main():
             try:
                 cmd = json.loads(line)
                 action = cmd.get("action")
+                payload = cmd.get("payload", {})
                 
                 IPCEmitter.emit("INFO", f"Executing: {action}")
+                diag_buffer.append("IPC", "COMMAND_RECEIVED", {"action": action, "payload": payload})
                 
                 if action == "CONFIG":
-                    payload = cmd.get("payload", {})
                     if "sensitivity" in payload: state["sensitivity"] = payload["sensitivity"]
                     if "smoothing" in payload: state["smoothing"] = payload["smoothing"]
                     if "pinch_threshold" in payload: state["pinch_threshold"] = payload["pinch_threshold"]
                     if "camera_id" in payload: state["camera_id"] = payload["camera_id"]
-                    if "calibration" in payload: state["calibration"] = payload["calibration"]
+                    if "calibration" in payload: 
+                        cal = payload["calibration"]
+                        
+                        # Fix Calibration IPC Mapping
+                        working_area = cal.get("workingArea", {})
+                        if working_area:
+                            cal["min_x"] = working_area.get("minX", 0.0)
+                            cal["max_x"] = working_area.get("maxX", 1.0)
+                            cal["min_y"] = working_area.get("minY", 0.0)
+                            cal["max_y"] = working_area.get("maxY", 1.0)
+                            
+                        state["calibration"] = cal
+                        diag_buffer.append("Config", "CALIBRATION_LOADED", {"source": "IPC", "data": cal})
+                        
+                        min_x = cal.get("min_x", 0.0)
+                        max_x = cal.get("max_x", 1.0)
+                        min_y = cal.get("min_y", 0.0)
+                        max_y = cal.get("max_y", 1.0)
+                        w = max_x - min_x
+                        h = max_y - min_y
+                        effective_pct = (w * h) * 100.0
+                        
+                        system_logger.info(
+                            f"\n[Workspace Audit] Calibration Loaded\n"
+                            f"minX={min_x:.3f}, maxX={max_x:.3f}, width={w:.3f}\n"
+                            f"minY={min_y:.3f}, maxY={max_y:.3f}, height={h:.3f}\n"
+                            f"Camera Resolution: 640x480\n"
+                            f"Effective Workspace %: {effective_pct:.1f}%\n"
+                        )
+                    if "force_move_only" in payload: state["force_move_only"] = payload["force_move_only"]
                     IPCEmitter.emit("CONFIG_APPLIED")
                     
                 elif action == "CALIBRATION_MODE":
@@ -123,6 +163,7 @@ def main():
                         
                 elif action == "CLOSE_CAMERA":
                     stream.close()
+                    action_executor.release_all_inputs()
                     IPCEmitter.emit("CAMERA_CLOSED")
                     
                 elif action == "START_TRACKING":
@@ -131,6 +172,7 @@ def main():
                     
                 elif action == "STOP_TRACKING":
                     state["tracking"] = False
+                    action_executor.release_all_inputs()
                     IPCEmitter.emit("TRACKING_STOPPED")
                     
                 elif action == "GET_STATUS":
@@ -201,7 +243,16 @@ def main():
     IPCEmitter.emit("SELF_TEST_RESULT", {"status": "ok"})
     
     version_info = get_version_info()
-    IPCEmitter.emit("PYTHON_BUILD_ID", f"{version_info['app_version']}-{version_info['commit_hash']}")
+    daemon_build_id = f"{version_info['app_version']}-{version_info['commit_hash']}"
+    IPCEmitter.emit("PYTHON_BUILD_ID", daemon_build_id)
+    
+    system_logger.info("--- RUNTIME VERIFICATION AUDIT ---")
+    system_logger.info(f"Executable Path: {sys.executable}")
+    system_logger.info(f"Current Working Directory: {os.getcwd()}")
+    system_logger.info(f"Daemon Script Path: {__file__}")
+    system_logger.info(f"Daemon Build ID: {daemon_build_id}")
+    system_logger.info(f"Python PID: {os.getpid()} | Parent PID: {os.getppid()}")
+    system_logger.info("----------------------------------")
     
     try:
 
@@ -228,6 +279,8 @@ def main():
             confidence = 0.0
             zoom_pose = False
             scroll_pose = False
+            intents = intent_recognizer.evaluate([], 0.1)
+            new_intent = None
             
             t_inference_start = time.perf_counter()
             
@@ -243,8 +296,8 @@ def main():
                     
                     if landmarks:
                         intents = intent_recognizer.evaluate(landmarks, hand_scale)
-                        zoom_pose = intents["ZOOM"]["intent_score"] > 0
-                        scroll_pose = intents["SCROLL"]["intent_score"] > 0
+                        zoom_pose = intents["ZOOM"]["intent_score"] > 0.5
+                        scroll_pose = intents["SCROLL"]["intent_score"] > 0.5
                     confidence = 1.0
                     has_hand = True
                     time.sleep(1/30.0)
@@ -304,7 +357,7 @@ def main():
                     
                     index_x = index.x
                     index_y = index.y
-                    landmarks = [{"x": lm.x, "y": lm.y} for lm in hand]
+                    landmarks = [{"x": lm.x, "y": lm.y, "z": lm.z} for lm in hand]
                     
                     if state["recording"]:
                         state["recorded_frames"].append({
@@ -316,8 +369,8 @@ def main():
                         })
                     
                     intents = intent_recognizer.evaluate(landmarks, hand_scale)
-                    zoom_pose = intents["ZOOM"]["intent_score"] > 0
-                    scroll_pose = intents["SCROLL"]["intent_score"] > 0
+                    zoom_pose = intents["ZOOM"]["intent_score"] > 0.5
+                    scroll_pose = intents["SCROLL"]["intent_score"] > 0.5
 
             t_inference_end = time.perf_counter()
             t_tracker = t_inference_end - t_inference_start
@@ -354,6 +407,8 @@ def main():
                 "t_curr": t_curr,
                 "zoom_pose": zoom_pose,
                 "scroll_pose": scroll_pose,
+                "left_click_score": intents["LEFT_CLICK"]["intent_score"] if has_hand else 0.0,
+                "right_click_score": intents["RIGHT_CLICK"]["intent_score"] if has_hand else 0.0,
                 "conf_hist": conf_hist,
                 "env_penalty": env_penalty,
                 "landmarks": landmarks
@@ -377,6 +432,9 @@ def main():
                     else:
                         t_gest_start = time.perf_counter()
                         new_intent = gesture_engine.detect_intent(validated_dict)
+                        if state.get("force_move_only", False):
+                            from pipeline_types import IntentType
+                            new_intent.type = IntentType.MOVE_CURSOR
                         t_gest = time.perf_counter() - t_gest_start
                         
                         t_mot_start = time.perf_counter()
@@ -389,6 +447,7 @@ def main():
                 else:
                     if state.get("hand_detected", False):
                         state["hand_detected"] = False
+                        action_executor.release_all_inputs()
                         IPCEmitter.emit("HAND_DETECTED", False)
 
             except Exception as ex:
@@ -400,6 +459,22 @@ def main():
             
             if has_hand:
                 active_name = new_intent.type.name if "new_intent" in locals() and new_intent else "NONE"
+                
+                reason_cursor_blocked = "NONE"
+                flags = validated_dict.get("reliability_flags", [])
+                
+                if not state["tracking"]:
+                    reason_cursor_blocked = "ENGINE_PAUSED"
+                elif "TRACKING_LOST" in flags:
+                    reason_cursor_blocked = "TRACKING_LOST"
+                elif "LOW_CONFIDENCE" in flags:
+                    reason_cursor_blocked = "LOW_CONFIDENCE"
+                elif "HIGH_VELOCITY" in flags:
+                    reason_cursor_blocked = "RELIABILITY_LOCK"
+                elif active_name == "ZOOM":
+                    reason_cursor_blocked = "ZOOM_ACTIVE"
+                elif active_name == "SCROLL":
+                    reason_cursor_blocked = "SCROLL_ACTIVE"
                 
                 IPCEmitter.emit("TELEMETRY", {
                     "x": validated_dict["raw_x"],
@@ -422,12 +497,15 @@ def main():
                     "frame_quality": validated_dict.get("frame_quality", 0.0),
                     "tracking_quality": validated_dict.get("reliability_score", 0.0),
                     "reliability_flags": validated_dict.get("reliability_flags", []),
+                    "rejected_frames": validated_dict.get("rejected_frames", 0),
+                    "grace_period_active": validated_dict.get("grace_period_active", False),
+                    "reason_cursor_blocked": reason_cursor_blocked,
                     "subsystems": {
                         "engine": "READY",
                         "camera": "READY" if state.get("camera_id") is not None else "DISCONNECTED",
                         "tracking": validated_dict["tracking_state"]
                     },
-                    "intent_matrix": {},
+                    "intent_matrix": intents,
                     "active_intent": active_name
                 })
 
@@ -459,12 +537,38 @@ def main():
         IPCEmitter.emit("ERROR", {"code": "FATAL_CRASH", "message": f"Daemon crashed: {str(e)}"})
     finally:
         IPCEmitter.emit("INFO", "Executing ordered shutdown")
+        system_logger.info(f"Active Python PID: {os.getpid()} - Initiating teardown")
+        
+        system_logger.info("[Shutdown Audit] Step 1: Releasing inputs")
+        try: action_executor.release_all_inputs()
+        except: pass
+        
+        system_logger.info("[Shutdown Audit] Step 2: Stopping action executor")
         try: action_executor.stop()
         except: pass
+        
+        system_logger.info("[Shutdown Audit] Step 3: Stopping tracker")
+        try: tracker.stop()
+        except: pass
+        
+        system_logger.info("[Shutdown Audit] Step 4: Closing camera stream")
         try: stream.close()
         except: pass
-        system_logger.info("Daemon shutdown complete.")
-        sys.exit(0)
+        
+        system_logger.info("[Shutdown Audit] Step 5: Joining command listener thread")
+        try: t.join(timeout=1.0)
+        except: pass
+        
+        system_logger.info("[Shutdown Audit] Step 6: Flushing Diagnostic Buffer")
+        try:
+            output_dir = os.path.join(os.path.dirname(__file__), "..", "..", "logs")
+            trace_path = os.path.join(output_dir, "motion_trace.json")
+            diag_buffer.flush_to_disk(trace_path)
+        except Exception as e:
+            system_logger.error(f"Failed to flush diagnostics: {e}")
+        
+        system_logger.info(f"Active Python PID: {os.getpid()} - Teardown complete. Exiting via os._exit(0).")
+        os._exit(0)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ import threading
 import time
 import math
 from pipeline_types import CommandType, ActionCommand
+from diagnostic_buffer import diag_buffer
 
 class ActionExecutor:
     def __init__(self, mouse_controller):
@@ -18,6 +19,7 @@ class ActionExecutor:
         self.zoom_accumulator = 0.0
         self.WHEEL_DELTA = 120.0
         self.momentum_k = 2.0
+        self.last_intent_update_time = time.perf_counter()
         
         self.lock = threading.Lock()
         self.thread = threading.Thread(target=self._loop, daemon=True)
@@ -49,16 +51,30 @@ class ActionExecutor:
             real_dt = max(last_time - t_curr + sleep_time, 0.001)
 
             with self.lock:
+                # Interaction Watchdog (Priority 7)
+                if (t_curr - self.last_intent_update_time) > 2.0:
+                    if self.scroll_active or self.zoom_active or self.is_left_down or self.mouse.ctrl_pressed:
+                        try:
+                            from logger import system_logger
+                            system_logger.warning("ActionExecutor Watchdog | Intent stale > 2.0s! Executing emergency OS input cleanup.")
+                        except Exception:
+                            pass
+                        self._release_all_inputs_unlocked()
+
                 if self.scroll_active: pass
                 else:
                     if abs(self.scroll_velocity) > 0.1: self.scroll_velocity *= math.exp(-self.momentum_k * real_dt)
                     else: self.scroll_velocity = 0.0
                         
                 if abs(self.scroll_velocity) > 0.1:
-                    self.scroll_accumulator += self.scroll_velocity * real_dt * 1500.0
-                    if abs(self.scroll_accumulator) >= self.WHEEL_DELTA:
-                        ticks = int(self.scroll_accumulator / self.WHEEL_DELTA) * int(self.WHEEL_DELTA)
+                    self.scroll_accumulator += self.scroll_velocity * real_dt * 1.0
+                    if abs(self.scroll_accumulator) >= 1.0:
+                        ticks = int(self.scroll_accumulator)
                         self.mouse.scroll(-ticks)
+                        try:
+                            diag_buffer.append("ActionExecutor", "OS_INJECTION", {"type": "scroll", "ticks": -ticks})
+                        except Exception:
+                            pass
                         self.scroll_accumulator -= ticks
                         
                 if self.zoom_active: pass
@@ -71,9 +87,9 @@ class ActionExecutor:
                         self.mouse.ctrl_up()
 
                 if abs(self.zoom_velocity) > 0.1:
-                    self.zoom_accumulator += self.zoom_velocity * real_dt * 1500.0
-                    if abs(self.zoom_accumulator) >= self.WHEEL_DELTA:
-                        ticks = int(self.zoom_accumulator / self.WHEEL_DELTA) * int(self.WHEEL_DELTA)
+                    self.zoom_accumulator += self.zoom_velocity * real_dt * 1.0
+                    if abs(self.zoom_accumulator) >= 1.0:
+                        ticks = int(self.zoom_accumulator)
                         self.mouse.scroll(-ticks)
                         self.zoom_accumulator -= ticks
 
@@ -82,7 +98,41 @@ class ActionExecutor:
         if self.thread.is_alive():
             self.thread.join()
 
+    def _release_all_inputs_unlocked(self):
+        """Internal helper for emergency cleanup without acquiring lock."""
+        self.scroll_active = False
+        self.zoom_active = False
+        self.scroll_velocity = 0.0
+        self.zoom_velocity = 0.0
+        self.is_left_down = False
+        self.mouse.release_all()
+        try:
+            from logger import system_logger
+            system_logger.info("ActionExecutor | Executed release_all_inputs (OS Input Cleanup)")
+        except Exception:
+            pass
+
+    def release_all_inputs(self):
+        """OS Input Cleanup (Priority 5 & 6)"""
+        with self.lock:
+            self._release_all_inputs_unlocked()
+
     def execute(self, command: ActionCommand):
+        with self.lock:
+            self.last_intent_update_time = time.perf_counter()
+            
+        diag_buffer.append("ActionExecutor", "COMMAND_RECEIVED", {
+            "command": command.type.name,
+            "x": getattr(command, "x", None),
+            "y": getattr(command, "y", None),
+            "velocity": getattr(command, "velocity", None),
+            "state_snapshot": {
+                "scroll_active": self.scroll_active,
+                "zoom_active": self.zoom_active,
+                "is_left_down": self.is_left_down
+            }
+        })
+            
         if command.type == CommandType.NONE:
             with self.lock:
                 self.scroll_active = False

@@ -31,6 +31,8 @@ class ValidatedTrackingData:
         self.reliability_score = 0.0
         self.flags = []
         self.invalidated_fields = []
+        self.grace_period_active = False
+        self.rejected_frames = 0
 
     def to_dict(self):
         return {
@@ -50,7 +52,9 @@ class ValidatedTrackingData:
             "frame_quality": self.frame_quality,
             "reliability_score": self.reliability_score,
             "reliability_flags": self.flags,
-            "invalidated_fields": self.invalidated_fields
+            "invalidated_fields": self.invalidated_fields,
+            "grace_period_active": self.grace_period_active,
+            "rejected_frames": self.rejected_frames
         }
 
 class ReliabilityEngine:
@@ -69,6 +73,7 @@ class ReliabilityEngine:
         self.tracking_active = False
         
         self.velocity_history = deque(maxlen=5)
+        self.rejected_frames_count = 0
 
     def _dist(self, p1, p2):
         if isinstance(p1, dict) and isinstance(p2, dict):
@@ -93,15 +98,20 @@ class ReliabilityEngine:
                 flags.append(ReliabilityFlags.LOW_CONFIDENCE)
                 
             self.lost_time = 0.0
+            self.rejected_frames_count = 0
         else:
             if self.tracking_active:
                 self.lost_time += dt * 1000.0
                 if self.lost_time > self.grace_period_ms:
                     self.tracking_active = False
+                    self.rejected_frames_count += 1
                 else:
                     out.has_hand = True
                     out.tracking_state = "DEGRADED_TRACKING"
                     flags.append(ReliabilityFlags.TRACKING_LOST)
+                    self.rejected_frames_count += 1
+            else:
+                self.rejected_frames_count += 1
         
         if self.tracking_active and has_hand:
             out.tracking_state = "TRACKING"
@@ -110,6 +120,9 @@ class ReliabilityEngine:
         else:
             out.tracking_state = "NO_HAND"
             out.has_hand = False
+            
+        out.grace_period_active = (self.lost_time > 0.0 and self.lost_time <= self.grace_period_ms and self.tracking_active)
+        out.rejected_frames = self.rejected_frames_count
             
         # 2. Prediction Error & Landmark Consistency
         anatomical_anomaly = False
@@ -132,13 +145,11 @@ class ReliabilityEngine:
             avg_v = sum(self.velocity_history) / len(self.velocity_history) if self.velocity_history else v
             
             # Rejection boundary based on historical velocity
-            max_allowed_v = max(avg_v * 5.0, 2.0)
+            max_allowed_v = max(avg_v * 10.0, 5.0)
             
             if len(self.velocity_history) >= 3 and v > max_allowed_v:
                 flags.append(ReliabilityFlags.HIGH_VELOCITY)
-                out.raw_x = self.last_valid_x
-                out.raw_y = self.last_valid_y
-                invalidated.extend(["raw_x", "raw_y"])
+                # DO NOT FREEZE cursor coordinates, just flag the event
                 v = avg_v 
             
             self.velocity_history.append(v)

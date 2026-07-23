@@ -81,6 +81,7 @@ export default function MainLayout() {
   }, []);
 
   const handleToggleEngine = async () => {
+    if (isTransitioning) return;
     if (engineState === 'READY' || engineState === 'STARTING' || engineState === 'INITIALIZING' || engineState === 'WAITING_CAMERA') {
       await EngineController.stop();
       resetState();
@@ -90,6 +91,7 @@ export default function MainLayout() {
   };
 
   const handleRestart = async () => {
+    if (isTransitioning) return;
     await EngineController.restart();
   };
 
@@ -144,8 +146,13 @@ export default function MainLayout() {
           {/* Restart Engine Button */}
           <button 
             onClick={handleRestart}
+            disabled={isTransitioning}
             title="Restart Engine without closing app"
-            className="flex items-center gap-1.5 px-2.5 py-1 mr-3 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 hover:text-white text-[11px] font-semibold transition-all cursor-pointer"
+            className={`flex items-center gap-1.5 px-2.5 py-1 mr-3 rounded-lg border border-white/10 text-[11px] font-semibold transition-all shadow-sm ${
+              isTransitioning 
+                ? 'bg-white/5 text-white/30 cursor-not-allowed border-white/5' 
+                : 'bg-white/5 hover:bg-white/10 text-white/70 hover:text-white cursor-pointer'
+            }`}
           >
             <RefreshCw className={`w-3 h-3 ${engineState === 'RESTARTING' ? 'animate-spin' : ''}`} />
             <span>Restart Engine</span>
@@ -154,10 +161,13 @@ export default function MainLayout() {
           {/* Engine Start/Stop Action Button */}
           <button
             onClick={handleToggleEngine}
-            className={`flex items-center gap-1.5 px-3 py-1 mr-4 rounded-lg font-bold text-[11px] transition-all cursor-pointer shadow-lg ${
-              isReady 
-                ? 'bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/40' 
-                : 'bg-purple-600 hover:bg-purple-500 text-white border border-purple-400/50'
+            disabled={isTransitioning}
+            className={`flex items-center gap-1.5 px-3 py-1 mr-4 rounded-lg font-bold text-[11px] transition-all shadow-lg ${
+              isTransitioning
+                ? 'bg-white/10 text-white/40 cursor-not-allowed border border-white/10 shadow-none'
+                : isReady 
+                  ? 'bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/40 cursor-pointer' 
+                  : 'bg-purple-600 hover:bg-purple-500 text-white border border-purple-400/50 cursor-pointer'
             }`}
           >
             {isReady ? <Square className="w-3 h-3 fill-current" /> : <Play className="w-3 h-3 fill-current" />}

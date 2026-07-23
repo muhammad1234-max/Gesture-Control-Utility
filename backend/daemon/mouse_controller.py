@@ -1,6 +1,7 @@
 import ctypes
 import time
 from ctypes import wintypes
+from diagnostic_buffer import diag_buffer
 
 # Win32 Constants
 INPUT_MOUSE = 0
@@ -68,6 +69,12 @@ class MouseController:
 
     def _send_mouse(self, flags, data=0):
         if self.dry_run: return
+        try:
+            from logger import system_logger
+            system_logger.debug(f"ActionExecutor OS | Mouse | flags={hex(flags)}, data={data}")
+            diag_buffer.append("ActionExecutor OS", "MOUSE_EVENT", {"flags": hex(flags), "data": data})
+        except Exception:
+            pass
         extra = ctypes.c_ulong(0)
         ii_ = INPUT_I()
         ii_.mi = MOUSEINPUT(0, 0, data, flags, 0, ctypes.pointer(extra))
@@ -75,6 +82,12 @@ class MouseController:
         ctypes.windll.user32.SendInput(1, ctypes.pointer(cmd), ctypes.sizeof(cmd))
         
     def _send_keyboard(self, vk, flags):
+        try:
+            from logger import system_logger
+            system_logger.debug(f"ActionExecutor OS | Keyboard | vk={hex(vk)}, flags={hex(flags)}")
+            diag_buffer.append("ActionExecutor OS", "KEYBOARD_EVENT", {"vk": hex(vk), "flags": hex(flags)})
+        except Exception:
+            pass
         extra = ctypes.c_ulong(0)
         ii_ = INPUT_I()
         ii_.ki = KEYBDINPUT(vk, 0, flags, 0, ctypes.pointer(extra))
@@ -117,15 +130,17 @@ class MouseController:
     def release_all(self):
         """OS Input Safety Guarantee: Release all mouse buttons & modifier keys unconditionally"""
         try:
-            self._send_mouse(MOUSEEVENTF_LEFTUP)
-            self.left_pressed = False
-            self._send_mouse(MOUSEEVENTF_RIGHTUP)
-            self.right_pressed = False
-            self._send_mouse(0x0020) # Middle up
-            self._send_keyboard(0x11, KEYEVENTF_KEYUP) # Ctrl up
-            self.ctrl_pressed = False
-            self._send_keyboard(0x10, KEYEVENTF_KEYUP) # Shift up
-            self._send_keyboard(0x12, KEYEVENTF_KEYUP) # Alt up
-            self._send_keyboard(0x5B, KEYEVENTF_KEYUP) # Win up
+            if self.left_pressed:
+                self._send_mouse(MOUSEEVENTF_LEFTUP)
+                self.left_pressed = False
+            if self.right_pressed:
+                self._send_mouse(MOUSEEVENTF_RIGHTUP)
+                self.right_pressed = False
+            # Middle button isn't tracked but if we want to be safe, don't blindly release it either
+            # We never press middle button in this app
+            
+            if self.ctrl_pressed:
+                self._send_keyboard(0x11, KEYEVENTF_KEYUP) # Ctrl up
+                self.ctrl_pressed = False
         except Exception:
             pass

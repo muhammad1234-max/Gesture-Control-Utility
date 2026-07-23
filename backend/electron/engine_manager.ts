@@ -27,8 +27,9 @@ export class EngineManager {
   private cameraState: CameraSubstate = 'DISCONNECTED';
   private trackingState: TrackingSubstate = 'IDLE';
 
-  private commandQueue: Array<() => Promise<void>> = [];
+  private commandQueue: Array<{ fn: () => Promise<void>, resolve: () => void, reject: (err: any) => void }> = [];
   private isProcessingQueue = false;
+  private manualStop = false;
 
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private lastHeartbeatTime: number = 0;
@@ -66,9 +67,11 @@ export class EngineManager {
   }
 
   // FIFO Command Queue Executor
-  public queueCommand(commandFn: () => Promise<void>) {
-    this.commandQueue.push(commandFn);
-    this.processCommandQueue();
+  public queueCommand(commandFn: () => Promise<void>): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.commandQueue.push({ fn: commandFn, resolve, reject });
+      this.processCommandQueue();
+    });
   }
 
   private async processCommandQueue() {
@@ -79,9 +82,11 @@ export class EngineManager {
       const nextCmd = this.commandQueue.shift();
       if (nextCmd) {
         try {
-          await nextCmd();
+          await nextCmd.fn();
+          nextCmd.resolve();
         } catch (err: any) {
           this.logStructured('ERROR', 'Engine', `Command queue error: ${err.message}`);
+          nextCmd.reject(err);
         }
       }
     }
@@ -118,9 +123,14 @@ export class EngineManager {
   }
 
   private setSubsystemStates(engine?: EngineSubstate, camera?: CameraSubstate, tracking?: TrackingSubstate, milestone?: string) {
+    const oldEngine = this.engineState;
     if (engine) this.engineState = engine;
     if (camera) this.cameraState = camera;
     if (tracking) this.trackingState = tracking;
+
+    if (engine && oldEngine !== engine) {
+        this.logStructured('INFO', 'Engine', `[State Machine Audit] ${oldEngine} -> ${engine} | Reason: ${milestone || 'State transition'}`);
+    }
 
     this.broadcast('SUBSYSTEM_STATE_CHANGED', {
       subsystems: this.getSubsystems(),
@@ -134,8 +144,9 @@ export class EngineManager {
     }
   }
 
-  public startEngine() {
-    this.queueCommand(async () => {
+  public async startEngine(): Promise<void> {
+    return this.queueCommand(async () => {
+      this.manualStop = false;
       if (this.engineState === 'READY') {
         this.logStructured('WARN', 'Engine', 'Start requested while engine is already READY. Skipping.');
         return;
@@ -172,10 +183,11 @@ export class EngineManager {
   }
 
   // Step 8: Ordered Graceful Shutdown
-  public stopEngine() {
-    this.queueCommand(async () => {
+  public async stopEngine(): Promise<void> {
+    return this.queueCommand(async () => {
       if (this.engineState === 'OFF') return;
 
+      this.manualStop = true;
       this.logStructured('INFO', 'Engine', 'Executing ordered graceful shutdown...');
       this.setSubsystemStates('STOPPING', 'DISCONNECTED', 'IDLE', 'Stopping System');
       this.stopHeartbeatWatchdog();
@@ -219,12 +231,80 @@ export class EngineManager {
     });
   }
 
-  public restartEngine() {
-    this.queueCommand(async () => {
+  public async restartEngine(): Promise<void> {
+    return this.queueCommand(async () => {
       this.logStructured('INFO', 'Engine', 'Executing Engine Restart...');
-      await this.stopEngine();
+      this.manualStop = true;
+      
+      this.logStructured('INFO', 'Engine', 'Executing ordered graceful shutdown for restart...');
+      this.setSubsystemStates('STOPPING', 'DISCONNECTED', 'IDLE', 'Stopping System');
+      this.stopHeartbeatWatchdog();
+
+      if (this.daemonProcess) {
+        try {
+          if (this.daemonProcess.stdin) {
+            this.daemonProcess.stdin.write(JSON.stringify({ action: 'RELEASE_ALL_INPUTS' }) + '\n');
+            this.daemonProcess.stdin.write(JSON.stringify({ action: 'STOP_TRACKING' }) + '\n');
+            this.daemonProcess.stdin.write(JSON.stringify({ action: 'CLOSE_CAMERA' }) + '\n');
+            this.daemonProcess.stdin.write('SHUTDOWN\n');
+          }
+        } catch (e) {}
+
+        await new Promise<void>((resolve) => {
+          const killTimer = setTimeout(() => {
+            if (this.daemonProcess) {
+              try { this.daemonProcess.kill('SIGKILL'); } catch (e) {}
+            }
+            resolve();
+          }, 1500);
+
+          if (this.daemonProcess) {
+            this.daemonProcess.once('exit', () => {
+              clearTimeout(killTimer);
+              resolve();
+            });
+          } else {
+            clearTimeout(killTimer);
+            resolve();
+          }
+        });
+      }
+
+      this.daemonProcess = null;
+      this.daemonPid = null;
+      this.deletePidFile();
+      this.setSubsystemStates('OFF', 'DISCONNECTED', 'IDLE', 'System Stopped for Restart');
+
       await new Promise(r => setTimeout(r, 400));
-      await this.startEngine();
+      
+      this.manualStop = false;
+      this.setSubsystemStates('STARTING', 'CONNECTING', 'IDLE', '[✓] Starting Engine');
+      await this.killStaleDaemonProcesses();
+
+      const isPackaged = app.isPackaged;
+      const venvPath = isPackaged 
+        ? path.join(process.resourcesPath, '.venv/Scripts/pythonw.exe')
+        : path.join(__dirname, '../../.venv/Scripts/pythonw.exe');
+        
+      const pythonPath = fs.existsSync(venvPath) ? venvPath : 'pythonw';
+      const scriptPath = isPackaged
+        ? path.join(process.resourcesPath, 'backend/daemon/daemon.py')
+        : path.join(__dirname, '../../backend/daemon/daemon.py');
+
+      this.logStructured('INFO', 'Engine', `Spawning daemon: ${pythonPath}`);
+
+      try {
+        this.daemonProcess = spawn(pythonPath, [scriptPath, '0'], { windowsHide: true });
+        this.daemonPid = this.daemonProcess.pid || null;
+        if (this.daemonPid) this.writePidFile(this.daemonPid);
+
+        this.setSubsystemStates('STARTING', 'CONNECTING', 'WARMING_UP', '[✓] Loading AI Models & Motion Engine');
+        this.setupProcessListeners();
+        this.startHeartbeatWatchdog();
+      } catch (err: any) {
+        this.setSubsystemStates('ERROR', 'ERROR', 'IDLE', 'Engine Spawn Error');
+        this.logStructured('ERROR', 'Engine', `Spawn failed: ${err.message}`);
+      }
     });
   }
 
@@ -239,6 +319,8 @@ export class EngineManager {
           if (!line.trim()) continue;
           try {
             const parsed = JSON.parse(line);
+            if (this.manualStop) continue; // Ignore stray heartbeats if we are explicitly stopping
+
             if (parsed.event === 'HEARTBEAT') {
               this.lastHeartbeatTime = Date.now();
               this.setSubsystemStates('READY', 'READY', 'TRACKING', '[✓] Ready');
@@ -270,7 +352,7 @@ export class EngineManager {
       this.deletePidFile();
       this.stopHeartbeatWatchdog();
 
-      if (!this.isShuttingDown && this.engineState !== 'STOPPING' && this.engineState !== 'OFF') {
+      if (!this.isShuttingDown && this.engineState !== 'STOPPING' && this.engineState !== 'OFF' && !this.manualStop) {
         this.setSubsystemStates('ERROR', 'DISCONNECTED', 'IDLE', `Process Exited (${code})`);
       }
     });

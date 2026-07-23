@@ -1,13 +1,15 @@
 import math
 from pipeline_types import IntentType, CommandType, ActionCommand
+from logger import system_logger
+from diagnostic_buffer import diag_buffer
 
 class MotionEngine:
     def __init__(self, get_screen_size_func):
         self.deadzone_px = 2.5
-        self.min_cutoff = 0.5
-        self.beta = 0.1
-        self.dcutoff = 2.0
-        self.pred_threshold = 50.0
+        self.min_cutoff = 0.01
+        self.beta = 0.002
+        self.dcutoff = 1.0
+        self.pred_threshold = 15.0
         self.vel_cap = 3000.0
         
         self.smoothed_x = None
@@ -57,7 +59,7 @@ class MotionEngine:
                 self.scroll_anchor = 0.992 * self.scroll_anchor + 0.008 * current_y
                 
             delta = -(current_y - self.scroll_anchor)
-            deadzone = 0.015
+            deadzone = 0.04
             sensitivity = 1.2 if is_zoom else 1.8
             
             if abs(delta) < deadzone:
@@ -75,20 +77,37 @@ class MotionEngine:
 
         # Handle MOVE_CURSOR and DRAG using 1-Euro Smoothing
         calib = config.state.get("calibration", {})
-        wa = calib.get("workingArea", {"minX": 0.2, "maxX": 0.8, "minY": 0.2, "maxY": 0.8})
+        wa = calib.get("workingArea", {})
         
-        nx = max(wa["minX"], min(intent.raw_x, wa["maxX"]))
-        ny = max(wa["minY"], min(intent.raw_y, wa["maxY"]))
+        wa_minX = wa.get("minX", 0.0)
+        wa_maxX = wa.get("maxX", 1.0)
+        wa_minY = wa.get("minY", 0.0)
+        wa_maxY = wa.get("maxY", 1.0)
         
-        norm_x = (nx - wa["minX"]) / (wa["maxX"] - wa["minX"])
-        norm_y = (ny - wa["minY"]) / (wa["maxY"] - wa["minY"])
+        # Enforce minimum boundaries (prevent ZeroDivisionError and extremely small workspaces)
+        if (wa_maxX - wa_minX) < 0.1:
+            wa_minX, wa_maxX = 0.0, 1.0
+        if (wa_maxY - wa_minY) < 0.1:
+            wa_minY, wa_maxY = 0.0, 1.0
+
+            
+        system_logger.debug(f"[Config Audit] Active Workspace: minX={wa_minX}, maxX={wa_maxX}, minY={wa_minY}, maxY={wa_maxY}")
+        
+        nx = max(wa_minX, min(intent.raw_x, wa_maxX))
+        ny = max(wa_minY, min(intent.raw_y, wa_maxY))
+        
+        norm_x = (nx - wa_minX) / (wa_maxX - wa_minX)
+        norm_y = (ny - wa_minY) / (wa_maxY - wa_minY)
         
         sensitivity = config.state.get("sensitivity", 1.0)
         user_smoothing = config.state.get("smoothing", 0.5)
         
         screen_w, screen_h = self.get_screen_size()
-        raw_x_px = norm_x * screen_w * sensitivity
-        raw_y_px = norm_y * screen_h * sensitivity
+        raw_x_px = norm_x * screen_w
+        raw_y_px = norm_y * screen_h
+        
+        if config.state.get("raw_motion_mode", False):
+            return ActionCommand(CommandType.MOVE_CURSOR, max(0, min(raw_x_px, screen_w - 1)), max(0, min(raw_y_px, screen_h - 1)))
         
         t_curr = intent.timestamp
         if intent.is_engaging:
@@ -135,13 +154,17 @@ class MotionEngine:
         target_y = blended_alpha * raw_y_px + (1 - blended_alpha) * self.smoothed_y
 
         dist_px = math.sqrt((target_x - self.smoothed_x)**2 + (target_y - self.smoothed_y)**2)
+        
+        reason_not_moving = ""
         if dist_px >= self.deadzone_px and vel >= self.pred_threshold:
             self.smoothed_x = target_x
             self.smoothed_y = target_y
             self.is_stationary = False
         else:
-            self.dx_ema = 0.0
-            self.dy_ema = 0.0
+            if vel < self.pred_threshold:
+                reason_not_moving = "BELOW_VELOCITY_THRESHOLD"
+            else:
+                reason_not_moving = "BELOW_DEADZONE"
             self.is_stationary = True
 
         if self.is_stationary:
@@ -161,10 +184,21 @@ class MotionEngine:
             
         pred_x = max(0, min(pred_x, screen_w - 1))
         pred_y = max(0, min(pred_y, screen_h - 1))
+        
+        # Instrumentation output as requested by user
+        diag_buffer.append("MotionEngine", "FRAME_TRACE", {
+            "raw": [intent.raw_x, intent.raw_y],
+            "workspace": [wa_minX, wa_maxX, wa_minY, wa_maxY],
+            "clamped": [nx, ny],
+            "normalized": [norm_x, norm_y],
+            "smoothed": [pred_x, pred_y],
+            "sent": [pred_x, pred_y] if not self.is_stationary else None,
+            "blocked_reason": reason_not_moving if self.is_stationary else "NONE"
+        })
+        
 
         # Output Command
         if intent.type == IntentType.DRAG:
-            # We don't need to re-emit LEFT_DOWN every frame, but the ActionExecutor can handle safety
-            return ActionCommand(CommandType.MOVE_CURSOR, pred_x, pred_y)
+            return ActionCommand(CommandType.DRAG, pred_x, pred_y)
         
         return ActionCommand(CommandType.MOVE_CURSOR, pred_x, pred_y)

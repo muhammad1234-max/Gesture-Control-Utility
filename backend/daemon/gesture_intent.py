@@ -73,16 +73,16 @@ class GestureIntentRecognizer:
         open_hand_reason = f"Joint angles straight ({int(index_angle)}°, {int(middle_angle)}°), relaxed open palm"
 
         # B. LEFT CLICK (Index + Thumb Pinch)
-        pinch_closeness = max(0.0, min(1.0, (0.06 - dist_thumb_index) / 0.04))
+        pinch_closeness = max(0.0, min(1.0, (0.12 - dist_thumb_index) / 0.04))
         left_click_conf = round(pinch_closeness * 100.0, 1)
         left_click_stab = round(wrist_stability * 0.9 + 10.0, 1)
-        left_click_reason = f"Thumb-Index pinch distance {dist_thumb_index:.3f} (< 0.05), angle {int(index_angle)}°"
+        left_click_reason = f"Thumb-Index pinch distance {dist_thumb_index:.3f} (< 0.12), angle {int(index_angle)}°"
 
         # C. RIGHT CLICK (Middle + Thumb Pinch)
-        middle_closeness = max(0.0, min(1.0, (0.06 - dist_thumb_middle) / 0.04))
+        middle_closeness = max(0.0, min(1.0, (0.12 - dist_thumb_middle) / 0.04))
         right_click_conf = round(middle_closeness * 100.0, 1)
         right_click_stab = round(wrist_stability * 0.9 + 10.0, 1)
-        right_click_reason = f"Thumb-Middle pinch distance {dist_thumb_middle:.3f} (< 0.05)"
+        right_click_reason = f"Thumb-Middle pinch distance {dist_thumb_middle:.3f} (< 0.12)"
 
         # D. SCROLL MODE (Index & Middle Extended, Ring & Pinky Folded)
         scroll_ext_score = (index_angle > 140.0) and (middle_angle > 140.0)
@@ -93,11 +93,29 @@ class GestureIntentRecognizer:
         scroll_reason = f"Index/Middle extended ({int(index_angle)}°/{int(middle_angle)}°), Ring/Pinky folded ({int(ring_angle)}°/{int(pinky_angle)}°)"
 
         # E. ZOOM MODE (Closed Fist: All fingers folded)
-        fist_score = (index_angle < 120.0) and (middle_angle < 120.0) and (ring_angle < 120.0) and (pinky_angle < 120.0)
+        # Threshold at 60° (not 90°) — prevents relaxed open hand from triggering
+        # All four fingers must be tightly curled simultaneously
+        fist_score = (index_angle < 60.0) and (middle_angle < 60.0) and (ring_angle < 60.0) and (pinky_angle < 60.0)
         zoom_intent = 1.0 if fist_score else 0.0
         zoom_conf = round(zoom_intent * 98.0, 1) if zoom_intent > 0 else 1.0
         zoom_stab = round(wrist_stability, 1)
         zoom_reason = f"All fingers folded ({int(index_angle)}°/{int(middle_angle)}°/{int(ring_angle)}°/{int(pinky_angle)}°)"
+        
+        try:
+            from diagnostic_buffer import diag_buffer
+            diag_buffer.append("GestureIntent", "ZOOM_EVALUATION", {
+                "angles": {
+                    "index": index_angle,
+                    "middle": middle_angle,
+                    "ring": ring_angle,
+                    "pinky": pinky_angle
+                },
+                "fist_score": fist_score,
+                "zoom_score": zoom_intent,
+                "reason": zoom_reason
+            })
+        except Exception:
+            pass
 
         return {
             "OPEN_HAND": {

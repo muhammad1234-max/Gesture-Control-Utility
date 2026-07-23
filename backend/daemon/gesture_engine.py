@@ -75,14 +75,14 @@ class ClickStateMachine:
         self.state_enter_time = 0.0
         
         # Scale-normalized Base Thresholds (from click_module.py L21-22)
-        self.base_on = 0.04
-        self.base_off = 0.06
+        self.base_on = 0.06
+        self.base_off = 0.08
         
-        # Timings (from click_module.py L25-29)
-        self.CONFIRM_MS = 60.0
-        self.DEBOUNCE_MS = 80.0
-        self.COOLDOWN_MS = 100.0
-        self.GRACE_MS = 150.0
+        # Timings (optimized for responsive natural clicks)
+        self.CONFIRM_MS = 15.0  # triggers on the first valid frame
+        self.DEBOUNCE_MS = 30.0
+        self.COOLDOWN_MS = 50.0
+        self.GRACE_MS = 100.0
         self.min_dist_during_press = 1.0
         
         self.last_seen_valid_time = 0.0
@@ -97,13 +97,13 @@ class ClickStateMachine:
         elif new_state in (ClickState.RELEASING, ClickState.COOLDOWN, ClickState.IDLE) and self.is_pressed:
             self.is_pressed = False
 
-    def process(self, hand_scale, distance, confidence_history, t_curr, env_penalty=1.0):
+    def process(self, click_score, confidence_history, t_curr, env_penalty=1.0):
         avg_conf = sum(confidence_history) / len(confidence_history) if confidence_history else 0.0
         
-        # Scale Mult (from click_module.py L87-89)
-        scale_mult = hand_scale / 0.1 if hand_scale > 0.01 else 1.0
-        on_thresh = self.base_on * scale_mult
-        off_thresh = self.base_off * scale_mult
+        # We now use the fully tuned, 3D-normalized click_score from intent_recognizer
+        # score > 0.6 means engaged, score < 0.4 means released
+        intent_met = click_score > 0.6 and avg_conf > 0.65
+        release_met = click_score < 0.4
         
         # Scale timings by env_penalty (from click_module.py L92-94)
         penalty_factor = 1.0 / max(0.2, env_penalty)
@@ -111,9 +111,6 @@ class ClickStateMachine:
         dynamic_debounce = self.DEBOUNCE_MS * penalty_factor
         
         elapsed_ms = (t_curr - self.state_enter_time) * 1000.0
-        
-        # Intent Check (from click_module.py L99)
-        intent_met = distance < on_thresh and avg_conf > 0.65
         
         if self.state == ClickState.IDLE:
             if intent_met:
@@ -128,20 +125,16 @@ class ClickStateMachine:
                 self.last_seen_valid_time = t_curr
                 if elapsed_ms >= dynamic_confirm:
                     self._change_state(ClickState.PRESSED, t_curr)
-                    self.min_dist_during_press = distance
 
         elif self.state == ClickState.PRESSED:
-            self.min_dist_during_press = min(self.min_dist_during_press, distance)
-            if distance > off_thresh:
+            if release_met:
                 if (t_curr - self.last_seen_valid_time) * 1000.0 > self.GRACE_MS:
-                    # Session Adaptation (from click_module.py L124)
-                    self.base_on = (0.95 * self.base_on) + (0.05 * max(0.01, self.min_dist_during_press + 0.01))
                     self._change_state(ClickState.RELEASING, t_curr)
             else:
                 self.last_seen_valid_time = t_curr
 
         elif self.state == ClickState.RELEASING:
-            if distance < off_thresh:
+            if not release_met:
                 self._change_state(ClickState.PRESSED, t_curr)
                 self.last_seen_valid_time = t_curr
             elif elapsed_ms >= dynamic_debounce:
@@ -207,6 +200,10 @@ class GestureEngine:
         self.zoom = ContinuousStateMachine("ZOOM")
         self.is_dragging = False
         self.last_hand_time = 0.0
+        self.current_intent = IntentType.IDLE
+        # Consecutive fist frame counter — ZOOM requires sustained fist pose
+        self._fist_frame_count = 0
+        self._FIST_FRAMES_REQUIRED = 8  # ~267ms at 30fps
 
     def detect_intent(self, tracking_data, legacy_manager=None, mock_mouse=None) -> UserIntent:
         """
@@ -281,15 +278,18 @@ class GestureEngine:
         # INDEPENDENT MODE: Use internal state machines only
         # =====================================================================
 
+        left_click_score = tracking_data.get("left_click_score", 0.0)
+        right_click_score = tracking_data.get("right_click_score", 0.0)
+
         # Block right click if peace sign is active or engaging to prevent accidental clicks
         if scroll_pose or self.scroll.is_active:
             self.right_click._change_state(ClickState.IDLE, t_curr)
             self.right_click.is_pressed = False
-            dist_m = 1.0
+            right_click_score = 0.0
 
         # Step 1: Feed all state machines (mirrors daemon.py processing order)
-        self.left_click.process(hand_scale, dist_i, conf_hist, t_curr, env_penalty)
-        self.right_click.process(hand_scale, dist_m, conf_hist, t_curr, env_penalty)
+        self.left_click.process(left_click_score, conf_hist, t_curr, env_penalty)
+        self.right_click.process(right_click_score, conf_hist, t_curr, env_penalty)
         
         # Extend grace period for ZOOM if confidence drops (e.g., due to fist obscuring landmarks)
         if self.zoom.is_active and confidence < 0.7:
@@ -297,8 +297,26 @@ class GestureEngine:
         else:
             self.zoom.GRACE_MS = 180.0
             
+        # Mutual exclusion: ZOOM and SCROLL poses are physically incompatible.
+        # If zoom_pose is signalled, forcibly deactivate scroll and vice versa.
+        if zoom_pose and self.scroll.is_active:
+            self.scroll.is_active = False
+            self.scroll.state_enter_time = 0.0
+        if scroll_pose and self.zoom.is_active:
+            self.zoom.is_active = False
+            self.zoom.state_enter_time = 0.0
+            self._fist_frame_count = 0
+
+        # Consecutive fist frame debounce — only allow zoom_pose to propagate
+        # after fist is held for _FIST_FRAMES_REQUIRED consecutive frames.
+        if zoom_pose:
+            self._fist_frame_count += 1
+        else:
+            self._fist_frame_count = 0
+        debounced_zoom_pose = self._fist_frame_count >= self._FIST_FRAMES_REQUIRED
+
         self.scroll.process_pose(scroll_pose, confidence, t_curr)
-        self.zoom.process_pose(zoom_pose, confidence, t_curr)
+        self.zoom.process_pose(debounced_zoom_pose, confidence, t_curr)
         
         # Step 2: Priority Arbitration
         # Replicate PriorityManager from interaction_manager.py L102-136
@@ -321,6 +339,44 @@ class GestureEngine:
         else:
             self.is_dragging = False
             intent_type = IntentType.MOVE_CURSOR
+
+        # State Transition Logging (Priority 1)
+        if intent_type != self.current_intent:
+            try:
+                from logger import system_logger
+                
+                # Try to get reason
+                reason = "Default"
+                if intent_type == IntentType.ZOOM: reason = "Zoom threshold met"
+                elif intent_type == IntentType.SCROLL: reason = "Scroll threshold met"
+                elif intent_type == IntentType.LEFT_CLICK: reason = "Left click pinch met"
+                elif intent_type == IntentType.RIGHT_CLICK: reason = "Right click pinch met"
+                elif intent_type == IntentType.DRAG: reason = "Drag hold met"
+                elif intent_type == IntentType.MOVE_CURSOR: reason = "Gestures released"
+                
+                system_logger.info(
+                    f"\n[INTERACTION STATE] {self.current_intent.name} \n"
+                    f"↓\n"
+                    f"{intent_type.name}\n"
+                    f"Reason: {reason}\n"
+                    f"Timestamp: {t_curr:.3f}\n"
+                )
+                from diagnostic_buffer import diag_buffer
+                diag_buffer.append("GestureEngine", "STATE_TRANSITION", {
+                    "old_state": self.current_intent.name,
+                    "new_state": intent_type.name,
+                    "reason": reason,
+                    "active_states": {
+                        "left_click": self.left_click.is_pressed,
+                        "right_click": self.right_click.is_pressed,
+                        "scroll": self.scroll.is_active,
+                        "zoom": self.zoom.is_active,
+                        "dragging": self.is_dragging
+                    }
+                })
+            except Exception:
+                pass
+            self.current_intent = intent_type
 
         is_engaging = (self.left_click.state == ClickState.ENGAGING)
         return UserIntent(intent_type, raw_x, raw_y, dist_i, confidence, t_curr, is_engaging=is_engaging)

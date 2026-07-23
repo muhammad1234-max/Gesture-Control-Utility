@@ -88,11 +88,24 @@ export default function CalibrationWizard() {
         return;
     }
     
-    // Calculate Working Area
-    const minX = Math.min(...xPoints) - 0.05;
-    const maxX = Math.max(...xPoints) + 0.05;
-    const minY = Math.min(...yPoints) - 0.05;
-    const maxY = Math.max(...yPoints) + 0.05;
+    // Calculate Working Area with generous padding
+    let minX = Math.min(...xPoints) - 0.15;
+    let maxX = Math.max(...xPoints) + 0.15;
+    let minY = Math.min(...yPoints) - 0.15;
+    let maxY = Math.max(...yPoints) + 0.15;
+    
+    // Enforce safe minimum bounds (at least 40% of the camera width/height)
+    if (maxX - minX < 0.4) {
+        const cx = (minX + maxX) / 2;
+        minX = cx - 0.2;
+        maxX = cx + 0.2;
+    }
+    
+    if (maxY - minY < 0.4) {
+        const cy = (minY + maxY) / 2;
+        minY = cy - 0.2;
+        maxY = cy + 0.2;
+    }
     
     // Estimate Velocity/Jitter
     const avgVelocity = velocities.length > 0 ? velocities.reduce((a,b)=>a+b, 0) / velocities.length : 0;
