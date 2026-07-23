@@ -288,13 +288,13 @@ def main():
                     confidence = 0.9 
                     
                     hand = results.multi_hand_landmarks[0].landmark
-                    wrist = hand[mp_hands.HandLandmark.WRIST]
-                    mcp = hand[mp_hands.HandLandmark.MIDDLE_FINGER_MCP]
+                    wrist = hand[0]   # WRIST
+                    mcp = hand[9]     # MIDDLE_FINGER_MCP
                     
-                    thumb = hand[mp_hands.HandLandmark.THUMB_TIP]
-                    index = hand[mp_hands.HandLandmark.INDEX_FINGER_TIP]
-                    middle = hand[mp_hands.HandLandmark.MIDDLE_FINGER_TIP]
-                    ring = hand[mp_hands.HandLandmark.RING_FINGER_TIP]
+                    thumb = hand[4]   # THUMB_TIP
+                    index = hand[8]   # INDEX_FINGER_TIP
+                    middle = hand[12] # MIDDLE_FINGER_TIP
+                    ring = hand[16]   # RING_FINGER_TIP
                     
                     hand_scale = dist(wrist, mcp)
                 

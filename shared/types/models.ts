@@ -3,13 +3,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type ActionType = 'keystroke' | 'launch-app' | 'volume-control' | 'media-control' | 'system';
+export type GestureMappingActionType = 'keystroke' | 'launch-app' | 'volume-control' | 'media-control' | 'system';
 
 export interface GestureMapping {
   id: string;
   name: string;
   trigger: string; // 'swipe-left' | 'swipe-right' | 'swipe-up' | 'swipe-down' | 'circle' | 'tap' | 'double-tap' | 'pinch'
-  actionType: ActionType;
+  actionType: GestureMappingActionType;
   targetAction: string; // e.g. "Ctrl+Shift+Z", "C:\Windows\System32\calc.exe", "volume-up", "media-play"
   isActive: boolean;
   confidenceThreshold: number; // 0 to 100

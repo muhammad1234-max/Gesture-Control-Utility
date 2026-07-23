@@ -1,5 +1,5 @@
-import { IntentType, Handedness } from './tracking'; // IntentType comes from intent, but let's import it from index actually
-import { IntentType as IT } from './intent'; // Direct import to avoid circular dependency in index if any
+import { Handedness } from './tracking';
+import { IntentType } from './intent';
 
 export enum ActionType {
   Mouse = 'Mouse',
@@ -31,7 +31,7 @@ export interface ExecutableAction {
   conditions?: ActionCondition[];
   
   // Traceability
-  sourceIntent: IT;
+  sourceIntent: IntentType;
   profileId: string;
 }
 

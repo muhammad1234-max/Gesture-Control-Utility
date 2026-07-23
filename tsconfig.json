@@ -11,6 +11,8 @@
     ],
     "skipLibCheck": true,
     "moduleResolution": "bundler",
+    "typeRoots": ["./node_modules/@types"],
+    "types": ["node"],
     "isolatedModules": true,
     "moduleDetection": "force",
     "allowJs": true,
@@ -23,6 +25,7 @@
       "@hooks/*": ["./src/hooks/*"],
       "@stores/*": ["./src/stores/*"],
       "@services/*": ["./src/services/*"],
+      "@controllers": ["./src/controllers/index.ts"],
       "@controllers/*": ["./src/controllers/*"],
       "@ipc/*": ["./src/ipc/*"],
       "@utils/*": ["./src/utils/*"],
@@ -32,5 +35,14 @@
     },
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  "include": [
+    "src",
+    "shared",
+    "backend/electron/main.ts",
+    "backend/electron/preload.ts",
+    "backend/electron/engine_manager.ts",
+    "backend/electron/WindowManager.ts"
+  ]
 }
+

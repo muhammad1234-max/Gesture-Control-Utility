@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { useConfigStore } from '../stores/configStore';
+import { useAppStore } from '@stores/appStore';
 
 const CalibrationWizard: React.FC = () => {
-    const { config, updateConfig } = useConfigStore();
+    const config = useAppStore(state => state.config);
+    const updateConfig = useAppStore(state => state.updateConfig);
     const [step, setStep] = useState(0);
     const [isCalibrating, setIsCalibrating] = useState(false);
     

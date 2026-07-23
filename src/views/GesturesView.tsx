@@ -64,7 +64,7 @@ export default function GesturesView() {
         }
       }
     });
-    return () => unsub();
+    return () => { unsub(); };
   }, [practiceMode, targetGesture]);
 
   const resetPractice = () => {

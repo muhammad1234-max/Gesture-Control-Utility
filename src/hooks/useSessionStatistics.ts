@@ -102,6 +102,6 @@ export const useSessionStatistics = () => {
       }
     });
 
-    return () => unsub();
+    return () => { unsub(); };
   }, []);
 };

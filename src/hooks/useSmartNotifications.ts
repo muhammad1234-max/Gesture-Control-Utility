@@ -47,6 +47,6 @@ export const useSmartNotifications = () => {
       }
     });
 
-    return () => unsub();
+    return () => { unsub(); };
   }, [showToast]);
 };

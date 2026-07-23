@@ -32,9 +32,13 @@ export interface AppConfig {
     overrides: AdaptiveOverrides;
     engineParams?: {
       deadzone_px: number;
-      mincutoff: number;
+      mincutoff: number;    // canonical name used in Python backend
+      min_cutoff: number;   // alias used by DeveloperPanel slider
       beta: number;
       dcutoff: number;
+      pred_threshold: number;
+      sensitivity: number;
+      vel_cap: number;
     };
   };
   calibration: {
@@ -50,6 +54,7 @@ export interface AppConfig {
       scroll: number;
     };
   };
+  gestures?: Record<string, any>;  // optional gesture config map
   activeProfileId: string;
 }
 
@@ -82,8 +87,12 @@ export const DEFAULT_CONFIG: AppConfig = {
     engineParams: {
       deadzone_px: 2.5,
       mincutoff: 0.5,
+      min_cutoff: 0.5,
       beta: 0.1,
-      dcutoff: 2.0
+      dcutoff: 2.0,
+      pred_threshold: 50.0,
+      sensitivity: 1.0,
+      vel_cap: 3000.0,
     }
   },
   calibration: {

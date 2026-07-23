@@ -59,7 +59,7 @@ export const DeveloperPanel = () => {
       if (msg.type === 'REPLAY_STARTED') setReplaying(true);
       if (msg.type === 'REPLAY_STOPPED') setReplaying(false);
     });
-    return () => unsub();
+    return () => { unsub(); };
   }, []);
 
   const toggleDryRun = () => {

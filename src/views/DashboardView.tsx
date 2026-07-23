@@ -30,7 +30,7 @@ export default function DashboardView() {
          setTelemetry(null);
       }
     });
-    return () => unsubscribe();
+    return () => { unsubscribe(); };
   }, []);
 
   const isReady = engineState === 'READY';
