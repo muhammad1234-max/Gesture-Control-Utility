@@ -338,7 +338,9 @@ def main():
             detected_pose_name = "NONE"
             
             t_inference_end = time.perf_counter()
-            env_penalty = env_monitor.update(rgb) if (rgb is not None and fps_frames % 30 == 0) else env_monitor.average_brightness / 255.0
+            if rgb is not None and fps_frames % 30 == 0:
+                env_monitor.process_frame(rgb, t_curr)
+            env_penalty = env_monitor.get_environmental_penalty()
 
             tracking_data.update({
                 "has_hand": has_hand,
