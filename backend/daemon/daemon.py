@@ -176,6 +176,7 @@ def main():
     fps_frames = 0
     fps = 0
     camera_failures = 0
+    conf_hist = []
     
     # Pipeline Setup via SystemContext
     mouse = ctx.mouse
@@ -322,11 +323,12 @@ def main():
             t_tracker = t_inference_end - t_inference_start
 
             if has_hand:
+                assert conf_hist is not None, "conf_hist must be initialized before appending"
                 conf_hist.append(confidence)
                 if len(conf_hist) > 5:
                     conf_hist.pop(0)
             else:
-                conf_hist = []
+                conf_hist.clear()
                 
             
             
@@ -449,6 +451,10 @@ def main():
                     "frame_latency_ms": round((t_end - t_start) * 1000.0, 2)
                 })
 
+    except Exception as e:
+        import traceback
+        system_logger.error(f"FATAL: Unhandled exception in main loop: {e}\n{traceback.format_exc()}")
+        IPCEmitter.emit("ERROR", {"code": "FATAL_CRASH", "message": f"Daemon crashed: {str(e)}"})
     finally:
         IPCEmitter.emit("INFO", "Executing ordered shutdown")
         try: action_executor.stop()
