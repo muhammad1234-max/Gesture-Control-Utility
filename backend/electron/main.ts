@@ -6,15 +6,13 @@ import { EngineManager } from './engine_manager';
 
 const store = new Store();
 
-// MIGRATION: Restore comfortable workspace defaults
+// MIGRATION: Restore comfortable anatomical reach workspace
 const storedConfig = store.get('appConfig') as any;
 if (storedConfig?.calibration?.workingArea) {
   const wa = storedConfig.calibration.workingArea;
-  if ((wa.minX === 0.0 && wa.maxX === 1.0 && wa.minY === 0.0 && wa.maxY === 1.0) || 
-      (wa.minX === 0.2 && wa.maxX === 0.8 && wa.minY === 0.2 && wa.maxY === 0.8) ||
-      (wa.minX === 0.2 && wa.maxX === 0.8 && wa.minY === 0.2 && wa.maxY === 0.7)) {
-    // Reset to tighter 0.3-0.7 frame for easy corner access
-    storedConfig.calibration.workingArea = { minX: 0.3, maxX: 0.7, minY: 0.3, maxY: 0.7 };
+  if (wa.minY >= 0.3 || wa.maxY >= 0.7 || wa.minX === 0.3) {
+    // Reset to anatomical workspace: minX=0.25, maxX=0.75, minY=0.20, maxY=0.58
+    storedConfig.calibration.workingArea = { minX: 0.25, maxX: 0.75, minY: 0.20, maxY: 0.58 };
     store.set('appConfig', storedConfig);
   }
 }

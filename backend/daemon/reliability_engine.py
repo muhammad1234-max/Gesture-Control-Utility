@@ -26,6 +26,9 @@ class ValidatedTrackingData:
         self.scroll_pose = raw_data.get("scroll_pose", False)
         self.env_penalty = raw_data.get("env_penalty", 0.0)
         self.landmarks = raw_data.get("landmarks", [])
+        self.left_click_score = raw_data.get("left_click_score", 0.0)
+        self.right_click_score = raw_data.get("right_click_score", 0.0)
+        self.conf_hist = raw_data.get("conf_hist", [])
         
         self.frame_quality = 0.0
         self.reliability_score = 0.0
@@ -47,6 +50,9 @@ class ValidatedTrackingData:
             "t_curr": self.t_curr,
             "zoom_pose": self.zoom_pose,
             "scroll_pose": self.scroll_pose,
+            "left_click_score": self.left_click_score,
+            "right_click_score": self.right_click_score,
+            "conf_hist": self.conf_hist,
             "env_penalty": self.env_penalty,
             "landmarks": self.landmarks,
             "frame_quality": self.frame_quality,
@@ -178,6 +184,8 @@ class ReliabilityEngine:
             out.dist_i = self.last_valid_dist_i
             out.dist_m = self.last_valid_dist_m
             out.hand_scale = self.last_valid_scale
+            out.left_click_score = 0.0
+            out.right_click_score = 0.0
         else:
             if "raw_x" not in invalidated:
                 self.last_valid_x = out.raw_x

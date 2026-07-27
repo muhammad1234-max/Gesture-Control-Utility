@@ -113,7 +113,7 @@ class CalibrationModule:
                     "maxY": min(1.0, y_center + y_range/2)
                 }
             else:
-                wa = {"minX": 0.2, "maxX": 0.8, "minY": 0.2, "maxY": 0.8}
+                wa = {"minX": 0.25, "maxX": 0.75, "minY": 0.20, "maxY": 0.58}
                 
             calib_data = {
                 "handScale": final_scale,

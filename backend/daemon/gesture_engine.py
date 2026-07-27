@@ -78,17 +78,23 @@ class ClickStateMachine:
         self.base_on = 0.06
         self.base_off = 0.08
         
-        # Timings (optimized for responsive natural clicks)
-        self.CONFIRM_MS = 15.0  # triggers on the first valid frame
-        self.DEBOUNCE_MS = 30.0
-        self.COOLDOWN_MS = 50.0
-        self.GRACE_MS = 100.0
+        # Timings (zero-cooldown instant clicks)
+        self.CONFIRM_MS = 0.0  # triggers instantly
+        self.DEBOUNCE_MS = 0.0
+        self.COOLDOWN_MS = 0.0
+        self.GRACE_MS = 0.0
         self.min_dist_during_press = 1.0
         
         self.last_seen_valid_time = 0.0
         self.is_pressed = False
 
     def _change_state(self, new_state, t_curr):
+        try:
+            from logger import system_logger
+            state_names = {0: 'IDLE', 1: 'ENGAGING', 2: 'PRESSED', 3: 'RELEASING', 4: 'COOLDOWN'}
+            system_logger.info(f"[ClickPipeline] {self.name} {state_names[self.state]} -> {state_names[new_state]} at {t_curr:.3f}")
+        except Exception:
+            pass
         self.state = new_state
         self.state_enter_time = t_curr
         
@@ -100,49 +106,31 @@ class ClickStateMachine:
     def process(self, click_score, confidence_history, t_curr, env_penalty=1.0):
         avg_conf = sum(confidence_history) / len(confidence_history) if confidence_history else 0.0
         
-        # We now use the fully tuned, 3D-normalized click_score from intent_recognizer
-        # score > 0.6 means engaged, score < 0.4 means released
-        intent_met = click_score > 0.6 and avg_conf > 0.65
-        release_met = click_score < 0.4
-        
-        # Scale timings by env_penalty (from click_module.py L92-94)
-        penalty_factor = 1.0 / max(0.2, env_penalty)
-        dynamic_confirm = self.CONFIRM_MS * penalty_factor
-        dynamic_debounce = self.DEBOUNCE_MS * penalty_factor
+        # Precise click thresholds: score > 0.60 engages physical pinch, score < 0.30 releases
+        intent_met = click_score > 0.60 and (avg_conf > 0.40 or len(confidence_history) == 0)
+        release_met = click_score < 0.30
         
         elapsed_ms = (t_curr - self.state_enter_time) * 1000.0
         
         if self.state == ClickState.IDLE:
             if intent_met:
-                self._change_state(ClickState.ENGAGING, t_curr)
+                self._change_state(ClickState.PRESSED, t_curr)
                 self.last_seen_valid_time = t_curr
 
         elif self.state == ClickState.ENGAGING:
-            if not intent_met:
-                if (t_curr - self.last_seen_valid_time) * 1000.0 > self.GRACE_MS:
-                    self._change_state(ClickState.IDLE, t_curr)
+            if intent_met:
+                self._change_state(ClickState.PRESSED, t_curr)
             else:
-                self.last_seen_valid_time = t_curr
-                if elapsed_ms >= dynamic_confirm:
-                    self._change_state(ClickState.PRESSED, t_curr)
+                self._change_state(ClickState.IDLE, t_curr)
 
         elif self.state == ClickState.PRESSED:
             if release_met:
-                if (t_curr - self.last_seen_valid_time) * 1000.0 > self.GRACE_MS:
-                    self._change_state(ClickState.RELEASING, t_curr)
+                self._change_state(ClickState.IDLE, t_curr)
             else:
                 self.last_seen_valid_time = t_curr
 
-        elif self.state == ClickState.RELEASING:
-            if not release_met:
-                self._change_state(ClickState.PRESSED, t_curr)
-                self.last_seen_valid_time = t_curr
-            elif elapsed_ms >= dynamic_debounce:
-                self._change_state(ClickState.COOLDOWN, t_curr)
-
-        elif self.state == ClickState.COOLDOWN:
-            if elapsed_ms >= self.COOLDOWN_MS:
-                self._change_state(ClickState.IDLE, t_curr)
+        elif self.state == ClickState.RELEASING or self.state == ClickState.COOLDOWN:
+            self._change_state(ClickState.IDLE, t_curr)
 
 
 # =============================================================================
@@ -204,6 +192,11 @@ class GestureEngine:
         # Consecutive fist frame counter — ZOOM requires sustained fist pose
         self._fist_frame_count = 0
         self._FIST_FRAMES_REQUIRED = 8  # ~267ms at 30fps
+
+        # Click vs Drag Gating
+        self.press_start_time = 0.0
+        self.press_anchor_x = 0.0
+        self.press_anchor_y = 0.0
 
     def detect_intent(self, tracking_data, legacy_manager=None, mock_mouse=None) -> UserIntent:
         """
@@ -331,13 +324,26 @@ class GestureEngine:
         elif self.right_click.is_pressed:
             intent_type = IntentType.RIGHT_CLICK
         elif self.left_click.is_pressed:
-            if not self.is_dragging:
-                self.is_dragging = True
+            if not self.press_start_time:
+                self.press_start_time = t_curr
+                self.press_anchor_x = raw_x
+                self.press_anchor_y = raw_y
+                self.is_dragging = False
                 intent_type = IntentType.LEFT_CLICK
             else:
-                intent_type = IntentType.DRAG
+                elapsed_ms = (t_curr - self.press_start_time) * 1000.0
+                dist_moved = math.sqrt((raw_x - self.press_anchor_x)**2 + (raw_y - self.press_anchor_y)**2)
+                
+                # DRAG requires deliberate hold (>= 500ms) AND physical displacement (> 0.08)
+                if elapsed_ms >= 500.0 and dist_moved > 0.08:
+                    self.is_dragging = True
+                    intent_type = IntentType.DRAG
+                else:
+                    self.is_dragging = False
+                    intent_type = IntentType.LEFT_CLICK
         else:
             self.is_dragging = False
+            self.press_start_time = 0.0
             intent_type = IntentType.MOVE_CURSOR
 
         # State Transition Logging (Priority 1)
@@ -378,7 +384,9 @@ class GestureEngine:
                 pass
             self.current_intent = intent_type
 
-        is_engaging = (self.left_click.state == ClickState.ENGAGING)
+        # Click Freeze signal: Only engage when fingers are actively closing to pinch (score > 0.45)
+        # Prevents normal cursor movement from triggering random cursor freezes!
+        is_engaging = (left_click_score > 0.45 and not self.left_click.is_pressed) or (self.left_click.state == ClickState.ENGAGING)
         return UserIntent(intent_type, raw_x, raw_y, dist_i, confidence, t_curr, is_engaging=is_engaging)
 
 

@@ -24,6 +24,10 @@ class MotionEngine:
         self.midas_active_until = 0.0
         self.was_dragging = False
         self.drop_stabilize_until = 0.0
+        self.click_anchor_x = None
+        self.click_anchor_y = None
+        self.last_still_x = None
+        self.last_still_y = None
         
         self.get_screen_size = get_screen_size_func
 
@@ -55,18 +59,19 @@ class MotionEngine:
             if not self.scroll_active:
                 self.scroll_active = True
                 self.scroll_anchor = current_y
-            else:
-                self.scroll_anchor = 0.992 * self.scroll_anchor + 0.008 * current_y
-                
+            # Do NOT decay scroll_anchor while active so hand movement maps 1:1 to continuous scrolling speed!
+
             delta = -(current_y - self.scroll_anchor)
-            deadzone = 0.04
-            sensitivity = 1.2 if is_zoom else 1.8
+            deadzone = 0.012  # Responsive 1.2% deadzone
+            sensitivity = 1.8 if is_zoom else 2.2
             
             if abs(delta) < deadzone:
                 vel = 0.0
             else:
-                effective_delta = (delta - math.copysign(deadzone, delta))
-                vel = math.tanh(effective_delta * sensitivity * 6.0) * 120.0 * sensitivity
+                effective_delta = delta - math.copysign(deadzone, delta)
+                # High-speed responsive linear-quadratic scaling
+                speed = (abs(effective_delta) * 650.0 + (abs(effective_delta) * 15.0) ** 2.0) * sensitivity
+                vel = math.copysign(min(speed, 1400.0), effective_delta)
 
             return ActionCommand(
                 CommandType.ZOOM if is_zoom else CommandType.SCROLL, 
@@ -79,22 +84,26 @@ class MotionEngine:
         calib = config.state.get("calibration", {})
         wa = calib.get("workingArea", {})
         
-        wa_minX = wa.get("minX", 0.0)
-        wa_maxX = wa.get("maxX", 1.0)
-        wa_minY = wa.get("minY", 0.0)
-        wa_maxY = wa.get("maxY", 1.0)
+        wa_minX = wa.get("minX", 0.25)
+        wa_maxX = wa.get("maxX", 0.75)
+        wa_minY = wa.get("minY", 0.20)
+        wa_maxY = wa.get("maxY", 0.58)
         
         # Enforce minimum boundaries (prevent ZeroDivisionError and extremely small workspaces)
         if (wa_maxX - wa_minX) < 0.1:
-            wa_minX, wa_maxX = 0.0, 1.0
+            wa_minX, wa_maxX = 0.25, 0.75
         if (wa_maxY - wa_minY) < 0.1:
-            wa_minY, wa_maxY = 0.0, 1.0
+            wa_minY, wa_maxY = 0.20, 0.58
 
             
         system_logger.debug(f"[Config Audit] Active Workspace: minX={wa_minX}, maxX={wa_maxX}, minY={wa_minY}, maxY={wa_maxY}")
         
-        nx = max(wa_minX, min(intent.raw_x, wa_maxX))
-        ny = max(wa_minY, min(intent.raw_y, wa_maxY))
+        # Clamp with generous overshoot margin (10% X, 15% Y) to pull cursor comfortably past physical screen edges
+        margin_x = (wa_maxX - wa_minX) * 0.10
+        margin_y = (wa_maxY - wa_minY) * 0.15
+        
+        nx = max(wa_minX - margin_x, min(intent.raw_x, wa_maxX + margin_x))
+        ny = max(wa_minY - margin_y, min(intent.raw_y, wa_maxY + margin_y))
         
         norm_x = (nx - wa_minX) / (wa_maxX - wa_minX)
         norm_y = (ny - wa_minY) / (wa_maxY - wa_minY)
@@ -153,18 +162,15 @@ class MotionEngine:
         target_x = blended_alpha * raw_x_px + (1 - blended_alpha) * self.smoothed_x
         target_y = blended_alpha * raw_y_px + (1 - blended_alpha) * self.smoothed_y
 
-        dist_px = math.sqrt((target_x - self.smoothed_x)**2 + (target_y - self.smoothed_y)**2)
+        raw_dist_px = math.sqrt((raw_x_px - self.smoothed_x)**2 + (raw_y_px - self.smoothed_y)**2)
         
         reason_not_moving = ""
-        if dist_px >= self.deadzone_px and vel >= self.pred_threshold:
+        if raw_dist_px >= self.deadzone_px:
             self.smoothed_x = target_x
             self.smoothed_y = target_y
             self.is_stationary = False
         else:
-            if vel < self.pred_threshold:
-                reason_not_moving = "BELOW_VELOCITY_THRESHOLD"
-            else:
-                reason_not_moving = "BELOW_DEADZONE"
+            reason_not_moving = "BELOW_DEADZONE"
             self.is_stationary = True
 
         if self.is_stationary:
@@ -182,8 +188,26 @@ class MotionEngine:
             pred_x = self.smoothed_x + (self.dx_ema * pred_sec)
             pred_y = self.smoothed_y + (self.dy_ema * pred_sec)
             
-        pred_x = max(0, min(pred_x, screen_w - 1))
-        pred_y = max(0, min(pred_y, screen_h - 1))
+        # Track last still cursor position when not engaging or clicking
+        if not intent.is_engaging and intent.type not in [IntentType.LEFT_CLICK, IntentType.RIGHT_CLICK, IntentType.DRAG]:
+            if self.smoothed_x is not None:
+                self.last_still_x = self.smoothed_x
+                self.last_still_y = self.smoothed_y
+            self.click_anchor_x = None
+            self.click_anchor_y = None
+
+        # Pre-Click & Click Anchor Lock: Freeze cursor at exact target position during finger closure
+        if intent.type in [IntentType.LEFT_CLICK, IntentType.RIGHT_CLICK] or intent.is_engaging:
+            if self.click_anchor_x is None:
+                self.click_anchor_x = self.last_still_x if self.last_still_x is not None else self.smoothed_x
+                self.click_anchor_y = self.last_still_y if self.last_still_y is not None else self.smoothed_y
+            pred_x = self.click_anchor_x
+            pred_y = self.click_anchor_y
+        else:
+            self.click_anchor_x = None
+            self.click_anchor_y = None
+            pred_x = max(0, min(pred_x, screen_w - 1))
+            pred_y = max(0, min(pred_y, screen_h - 1))
         
         # Instrumentation output as requested by user
         diag_buffer.append("MotionEngine", "FRAME_TRACE", {

@@ -160,6 +160,11 @@ class ActionExecutor:
 
         if command.type == CommandType.MOVE_CURSOR:
             if self.is_left_down:
+                try:
+                    from logger import system_logger
+                    system_logger.info(f"[ClickPipeline] ActionExecutor injecting LEFT_UP (MOVE_CURSOR) at {time.perf_counter():.3f}")
+                except Exception:
+                    pass
                 self.mouse.left_up()
                 self.is_left_down = False
             self.mouse.set_cursor_pos(command.x, command.y)
@@ -174,12 +179,22 @@ class ActionExecutor:
 
         if command.type == CommandType.LEFT_DOWN:
             if not self.is_left_down:
+                try:
+                    from logger import system_logger
+                    system_logger.info(f"[ClickPipeline] ActionExecutor injecting LEFT_DOWN at {time.perf_counter():.3f}")
+                except Exception:
+                    pass
                 self.mouse.left_down()
                 self.is_left_down = True
             return
 
         if command.type == CommandType.LEFT_UP:
             if self.is_left_down:
+                try:
+                    from logger import system_logger
+                    system_logger.info(f"[ClickPipeline] ActionExecutor injecting LEFT_UP at {time.perf_counter():.3f}")
+                except Exception:
+                    pass
                 self.mouse.left_up()
                 self.is_left_down = False
             return

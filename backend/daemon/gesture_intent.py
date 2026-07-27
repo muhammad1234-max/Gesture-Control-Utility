@@ -4,6 +4,9 @@ import time
 def dist_3d(p1, p2):
     return math.sqrt((p1["x"] - p2["x"])**2 + (p1["y"] - p2["y"])**2 + (p1.get("z", 0) - p2.get("z", 0))**2)
 
+def dist_2d(p1, p2):
+    return math.sqrt((p1["x"] - p2["x"])**2 + (p1["y"] - p2["y"])**2)
+
 def calc_angle(p1, p2, p3):
     # Vector p2->p1 and p2->p3
     v1 = (p1["x"] - p2["x"], p1["y"] - p2["y"])
@@ -60,10 +63,29 @@ class GestureIntentRecognizer:
         ring_angle = calc_angle(ring_mcp, ring_pip, ring_tip)
         pinky_angle = calc_angle(pinky_mcp, pinky_pip, pinky_tip)
 
-        # Distances normalized to hand scale
-        dist_thumb_index = dist_3d(thumb_tip, index_tip) / (hand_scale / 0.1)
-        dist_thumb_middle = dist_3d(thumb_tip, middle_tip) / (hand_scale / 0.1)
-        dist_thumb_index_pip = dist_3d(thumb_tip, index_pip) / (hand_scale / 0.1)
+        # Distances normalized to hand scale (2D image space for sub-pixel vision accuracy)
+        safe_scale = max(0.01, hand_scale)
+        
+        index_dip = landmarks[7]
+        middle_dip = landmarks[11]
+
+        # Multi-joint distance support for ALL touch positions:
+        # Evaluates 2D distances between thumb (TIP and IP) and index digit (TIP, DIP, and PIP)
+        thumb_ip = landmarks[3]
+        index_pip = landmarks[6]
+        
+        dist_thumb_index_min = min(
+            dist_2d(thumb_tip, index_tip),
+            dist_2d(thumb_tip, index_dip),
+            dist_2d(thumb_tip, index_pip),
+            dist_2d(thumb_ip, index_tip),
+            dist_2d(thumb_ip, index_dip)
+        )
+        dist_thumb_middle_min = min(dist_2d(thumb_tip, middle_tip), dist_2d(thumb_tip, middle_dip))
+
+        norm_dist_thumb_index = dist_thumb_index_min / safe_scale
+        norm_dist_thumb_middle = dist_thumb_middle_min / safe_scale
+        dist_thumb_index_pip = dist_2d(thumb_tip, index_pip) / safe_scale
 
         # Evaluate Individual Gestures
 
@@ -72,17 +94,18 @@ class GestureIntentRecognizer:
         open_hand_stab = wrist_stability
         open_hand_reason = f"Joint angles straight ({int(index_angle)}°, {int(middle_angle)}°), relaxed open palm"
 
-        # B. LEFT CLICK (Index + Thumb Pinch)
-        pinch_closeness = max(0.0, min(1.0, (0.12 - dist_thumb_index) / 0.04))
+        # B. LEFT CLICK (All-Position Thumb-Index Touch)
+        # norm_dist <= 0.22 = touch (100% score), >= 0.38 = open (0% score)
+        pinch_closeness = max(0.0, min(1.0, (0.38 - norm_dist_thumb_index) / 0.16))
         left_click_conf = round(pinch_closeness * 100.0, 1)
         left_click_stab = round(wrist_stability * 0.9 + 10.0, 1)
-        left_click_reason = f"Thumb-Index pinch distance {dist_thumb_index:.3f} (< 0.12), angle {int(index_angle)}°"
+        left_click_reason = f"Thumb-Index 2D ratio {norm_dist_thumb_index:.3f} (touch target < 0.30), angle {int(index_angle)}°"
 
-        # C. RIGHT CLICK (Middle + Thumb Pinch)
-        middle_closeness = max(0.0, min(1.0, (0.12 - dist_thumb_middle) / 0.04))
+        # C. RIGHT CLICK (Middle + Thumb Pinch: Tip-to-tip or Side pinch)
+        middle_closeness = max(0.0, min(1.0, (0.38 - norm_dist_thumb_middle) / 0.16))
         right_click_conf = round(middle_closeness * 100.0, 1)
         right_click_stab = round(wrist_stability * 0.9 + 10.0, 1)
-        right_click_reason = f"Thumb-Middle pinch distance {dist_thumb_middle:.3f} (< 0.12)"
+        right_click_reason = f"Thumb-Middle 2D ratio {norm_dist_thumb_middle:.3f} (pinch target < 0.26)"
 
         # D. SCROLL MODE (Index & Middle Extended, Ring & Pinky Folded)
         scroll_ext_score = (index_angle > 140.0) and (middle_angle > 140.0)

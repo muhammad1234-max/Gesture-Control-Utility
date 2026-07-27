@@ -97,10 +97,10 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   calibration: {
     workingArea: {
-      minX: 0.3,
-      maxX: 0.7,
-      minY: 0.3,
-      maxY: 0.7,
+      minX: 0.25,
+      maxX: 0.75,
+      minY: 0.20,
+      maxY: 0.58,
     },
     pinchThresholds: {
       left: 0.05,
