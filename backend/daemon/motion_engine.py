@@ -42,9 +42,6 @@ class MotionEngine:
             self.is_stationary = True
             return ActionCommand(CommandType.NONE)
             
-        if intent.type == IntentType.LEFT_CLICK:
-            return ActionCommand(CommandType.LEFT_DOWN)
-            
         if intent.type == IntentType.RIGHT_CLICK:
             return ActionCommand(CommandType.RIGHT_CLICK)
 
@@ -80,7 +77,7 @@ class MotionEngine:
             
         self.scroll_active = False
 
-        # Handle MOVE_CURSOR and DRAG using 1-Euro Smoothing
+        # Handle Cursor Motion using 1-Euro Smoothing
         calib = config.state.get("calibration", {})
         wa = calib.get("workingArea", {})
         
@@ -119,25 +116,6 @@ class MotionEngine:
             return ActionCommand(CommandType.MOVE_CURSOR, max(0, min(raw_x_px, screen_w - 1)), max(0, min(raw_y_px, screen_h - 1)))
         
         t_curr = intent.timestamp
-        if intent.is_engaging:
-            if not self.is_engaging:
-                self.is_engaging = True
-                self.midas_active_until = t_curr + 0.150
-        else:
-            self.is_engaging = False
-
-        if intent.type == IntentType.DRAG:
-            self.was_dragging = True
-        elif self.was_dragging and intent.type != IntentType.DRAG:
-            self.was_dragging = False
-            if intent.type == IntentType.MOVE_CURSOR:
-                self.drop_stabilize_until = t_curr + 0.200
-
-        # Midas Touch & Drop Stabilization Freeze
-        if self.smoothed_x is not None:
-            if t_curr < self.midas_active_until or t_curr < self.drop_stabilize_until:
-                raw_x_px = self.smoothed_x
-                raw_y_px = self.smoothed_y
 
         # Update 1-Euro filter
         if self.smoothed_x is None:
@@ -188,27 +166,23 @@ class MotionEngine:
             pred_x = self.smoothed_x + (self.dx_ema * pred_sec)
             pred_y = self.smoothed_y + (self.dy_ema * pred_sec)
             
-        # Track last still cursor position when not engaging or clicking
-        if not intent.is_engaging and intent.type not in [IntentType.LEFT_CLICK, IntentType.RIGHT_CLICK, IntentType.DRAG]:
+        # Session Cursor Lock: Freeze cursor strictly if session demands it
+        cursor_locked = intent.session is not None and intent.session.cursor_locked
+        if not cursor_locked:
             if self.smoothed_x is not None:
                 self.last_still_x = self.smoothed_x
                 self.last_still_y = self.smoothed_y
             self.locked_cursor_x = None
             self.locked_cursor_y = None
-
-        # Pre-Click Anchor Lock: Freeze cursor exactly at target position ONLY during finger closure (40-80ms)
-        # Once the click confirms (LEFT_CLICK or RIGHT_CLICK), the cursor is UNLOCKED so it continues moving seamlessly.
-        if intent.is_engaging:
+        else:
             if self.locked_cursor_x is None:
                 self.locked_cursor_x = self.last_still_x if self.last_still_x is not None else self.smoothed_x
                 self.locked_cursor_y = self.last_still_y if self.last_still_y is not None else self.smoothed_y
             pred_x = self.locked_cursor_x
             pred_y = self.locked_cursor_y
-        else:
-            self.locked_cursor_x = None
-            self.locked_cursor_y = None
-            pred_x = max(0, min(pred_x, screen_w - 1))
-            pred_y = max(0, min(pred_y, screen_h - 1))
+
+        pred_x = max(0, min(pred_x, screen_w - 1))
+        pred_y = max(0, min(pred_y, screen_h - 1))
         
         # Instrumentation output as requested by user
         diag_buffer.append("MotionEngine", "FRAME_TRACE", {
@@ -221,12 +195,5 @@ class MotionEngine:
             "blocked_reason": reason_not_moving if self.is_stationary else "NONE"
         })
         
-
-        # Output Command
-        interaction_id = getattr(intent, "interaction_id", "")
-        if intent.type == IntentType.DRAG:
-            return ActionCommand(CommandType.DRAG, pred_x, pred_y, interaction_id=interaction_id)
-        elif intent.type == IntentType.LEFT_CLICK:
-            return ActionCommand(CommandType.LEFT_DOWN, pred_x, pred_y, interaction_id=interaction_id)
-        
+        interaction_id = getattr(intent.session, "interaction_id", "") if intent.session else ""
         return ActionCommand(CommandType.MOVE_CURSOR, pred_x, pred_y, interaction_id=interaction_id)

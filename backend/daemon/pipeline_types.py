@@ -1,4 +1,5 @@
 from enum import Enum, auto
+from collections import deque
 
 class IntentType(Enum):
     MOVE_CURSOR = auto()
@@ -11,17 +12,30 @@ class IntentType(Enum):
     TRACKING_LOST = auto()
     IDLE = auto()
 
+class ClickEvent(Enum):
+    NONE = auto()
+    DOWN = auto()
+    UP = auto()
+
+class InteractionSession:
+    __slots__ = ['interaction_id', 'pending_events', 'cursor_locked', 'unlock_time', 'is_active']
+    def __init__(self, interaction_id: str = ""):
+        self.interaction_id = interaction_id
+        self.pending_events = deque()
+        self.cursor_locked = False
+        self.unlock_time = 0.0
+        self.is_active = True
+
 class UserIntent:
-    __slots__ = ['type', 'raw_x', 'raw_y', 'pinch_distance', 'confidence', 'timestamp', 'is_engaging', 'interaction_id']
-    def __init__(self, type: IntentType, raw_x: float, raw_y: float, pinch_distance: float, confidence: float, timestamp: float, is_engaging: bool = False, interaction_id: str = ""):
+    __slots__ = ['type', 'raw_x', 'raw_y', 'pinch_distance', 'confidence', 'timestamp', 'session']
+    def __init__(self, type: IntentType, raw_x: float, raw_y: float, pinch_distance: float, confidence: float, timestamp: float, session: InteractionSession = None):
         self.type = type
         self.raw_x = raw_x
         self.raw_y = raw_y
         self.pinch_distance = pinch_distance
         self.confidence = confidence
         self.timestamp = timestamp
-        self.is_engaging = is_engaging
-        self.interaction_id = interaction_id
+        self.session = session
 
 class CommandType(Enum):
     MOVE_CURSOR = auto()

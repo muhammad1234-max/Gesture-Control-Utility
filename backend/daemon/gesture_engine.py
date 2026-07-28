@@ -1,5 +1,5 @@
 import math
-from pipeline_types import IntentType, UserIntent
+from pipeline_types import IntentType, UserIntent, ClickEvent, InteractionSession
 
 # =============================================================================
 # MockMouse — Intercept layer for legacy modules (Step 05 compatibility)
@@ -48,6 +48,7 @@ class MockMouse:
 # Extracted rules from modules/click_module.py, preserving every constant.
 # =============================================================================
 import uuid
+from diagnostic_buffer import diag_buffer
 
 class ClickState:
     IDLE = 0
@@ -84,6 +85,7 @@ class ClickStateMachine:
         self.DRAG_DIST_THRESHOLD = 0.06
         self.LOST_TRACKING_GRACE_MS = 200.0
         self.COOLDOWN_MS = 80.0
+        self.STABILIZATION_DELAY_S = 0.040  # 40ms configurable post-click delay
         
         self.interaction_id = ""
         self.press_start_time = 0.0
@@ -97,6 +99,14 @@ class ClickStateMachine:
         self.pre_click_drift = 0.0
         self.locked_palm_x = 0.0
         self.locked_palm_y = 0.0
+        
+        self.session = None
+
+    def _push_event(self, event: ClickEvent):
+        if self.session and self.session.is_active:
+            # Guarantee Idempotency: Do not push duplicate sequential events
+            if not self.session.pending_events or self.session.pending_events[-1] != event:
+                self.session.pending_events.append(event)
 
     def _change_state(self, new_state, t_curr, reason=""):
         state_names = {
@@ -104,12 +114,42 @@ class ClickStateMachine:
             3: 'CLICK_DOWN', 4: 'HELD', 5: 'LOST_TRACKING',
             6: 'RELEASE', 7: 'COOLDOWN'
         }
+        old_state = self.state
         old_name = state_names.get(self.state, str(self.state))
         new_name = state_names.get(new_state, str(new_state))
         
         if new_state == ClickState.PINCH_STARTED and not self.interaction_id:
             self.interaction_id = f"clk_{uuid.uuid4().hex[:6]}"
             
+        # =========================================================
+        # InteractionSession Lifecycle & Event Queue Logic
+        # =========================================================
+        if new_state == ClickState.PINCH_STARTED and old_state == ClickState.IDLE:
+            self.session = InteractionSession(interaction_id=self.interaction_id)
+            self.session.cursor_locked = True
+            
+        if new_state == ClickState.CLICK_DOWN and old_state != ClickState.CLICK_DOWN:
+            self._push_event(ClickEvent.DOWN)
+            
+        if new_state == ClickState.RELEASE and old_state in (ClickState.CLICK_DOWN, ClickState.HELD, ClickState.LOST_TRACKING):
+            self._push_event(ClickEvent.UP)
+            if self.session:
+                self.session.unlock_time = t_curr + self.STABILIZATION_DELAY_S
+
+        if new_state == ClickState.IDLE:
+            if self.is_pressed:
+                # Catch hard-resets that bypass RELEASE to prevent stuck clicks
+                self._push_event(ClickEvent.UP)
+            if self.session:
+                self.session.is_active = False
+                self.session.cursor_locked = False
+                
+        # Handle Session Expiry (Delayed destruction for stabilization)
+        if self.session and not self.session.is_active and t_curr > self.session.unlock_time:
+            # Ensure queue is flushed before destruction
+            if not self.session.pending_events:
+                self.session = None
+
         try:
             from logger import system_logger
             system_logger.info(
@@ -159,12 +199,20 @@ class ClickStateMachine:
             self.HOLD_TIME_MS = config.state.get("hold_delay_ms", 350.0)
             self.DRAG_DIST_THRESHOLD = config.state.get("drag_distance", 0.06)
             self.COOLDOWN_MS = config.state.get("debounce_ms", 80.0)
+            self.STABILIZATION_DELAY_S = config.state.get("stabilization_delay_ms", 40.0) / 1000.0
             
         avg_conf = sum(confidence_history) / len(confidence_history) if (confidence_history and len(confidence_history) > 0) else (1.0 if has_hand else 0.0)
         # Fused Dual-Confidence Model
         fused_conf = click_score * avg_conf if has_hand else 0.0
         elapsed_ms = (t_curr - self.state_enter_time) * 1000.0
         
+        # Check active session lock expiry
+        if self.session and not self.session.is_active and self.session.cursor_locked:
+            if t_curr >= self.session.unlock_time:
+                self.session.cursor_locked = False
+                if not self.session.pending_events:
+                    self.session = None
+
         if self.state == ClickState.IDLE:
             if has_hand and click_score > self.pre_engage_threshold:
                 self.confidence_accumulator = 0.35
@@ -176,16 +224,6 @@ class ClickStateMachine:
                 self._change_state(ClickState.PINCH_STARTED, t_curr, "Geometry score > 0.40")
                 
         elif self.state in (ClickState.PINCH_STARTED, ClickState.CONFIRMING):
-            if has_hand:
-                # Drift cancellation is based strictly on palm displacement, isolating finger flexion
-                drift = math.sqrt((palm_x - self.locked_palm_x)**2 + (palm_y - self.locked_palm_y)**2)
-                self.pre_click_drift = max(self.pre_click_drift, drift)
-                
-                # Drift cancellation: >25px (approx 0.025 normalized) cancels the click entirely
-                if self.pre_click_drift > 0.025:
-                    self._change_state(ClickState.IDLE, t_curr, f"REJECTED: Drift exceeded ({self.pre_click_drift*1000:.1f}px)")
-                    return
-
             if self.state == ClickState.PINCH_STARTED:
                 if not has_hand:
                     self._change_state(ClickState.IDLE, t_curr, "Hand tracking lost")
@@ -309,11 +347,6 @@ class GestureEngine:
         self._fist_frame_count = 0
         self._FIST_FRAMES_REQUIRED = 8  # ~267ms at 30fps
 
-        # Click vs Drag Gating
-        self.press_start_time = 0.0
-        self.press_anchor_x = 0.0
-        self.press_anchor_y = 0.0
-
     def detect_intent(self, tracking_data, legacy_manager=None, mock_mouse=None, config=None) -> UserIntent:
         """
         When mock_mouse is provided: LEGACY MODE — reads MockMouse side-effects.
@@ -345,6 +378,8 @@ class GestureEngine:
                 zoom_pose = False
                 confidence = 0.0
             else:
+                # Capture session before forcing IDLE so we can flush any emergency UP events
+                expiring_session = self.left_click.session
                 self.left_click._change_state(ClickState.IDLE, t_curr)
                 self.left_click.is_pressed = False
                 self.right_click._change_state(ClickState.IDLE, t_curr)
@@ -354,9 +389,9 @@ class GestureEngine:
                 self.zoom.is_active = False
                 self.zoom.state_enter_time = 0.0
                 self.is_dragging = False
-                return UserIntent(IntentType.NO_HAND, raw_x, raw_y, dist_i, confidence, t_curr)
+                return UserIntent(IntentType.NO_HAND, raw_x, raw_y, dist_i, confidence, t_curr, session=expiring_session)
         if tracking_state == "WARMING_UP":
-            return UserIntent(IntentType.IDLE, raw_x, raw_y, dist_i, confidence, t_curr)
+            return UserIntent(IntentType.IDLE, raw_x, raw_y, dist_i, confidence, t_curr, session=None)
 
         # =====================================================================
         # LEGACY MODE: Read MockMouse side-effects from PriorityManager
@@ -381,7 +416,7 @@ class GestureEngine:
                 intent_type = IntentType.MOVE_CURSOR
                 
             mock_mouse.scroll_delta = 0
-            return UserIntent(intent_type, raw_x, raw_y, dist_i, confidence, t_curr)
+            return UserIntent(intent_type, raw_x, raw_y, dist_i, confidence, t_curr, session=None)
 
         # =====================================================================
         # INDEPENDENT MODE: Use internal state machines only
@@ -472,7 +507,6 @@ class GestureEngine:
                     f"Reason: {reason}\n"
                     f"Timestamp: {t_curr:.3f}\n"
                 )
-                from diagnostic_buffer import diag_buffer
                 diag_buffer.append("GestureEngine", "STATE_TRANSITION", {
                     "interaction_id": self.left_click.interaction_id,
                     "old_state": self.current_intent.name,
@@ -490,9 +524,8 @@ class GestureEngine:
                 pass
             self.current_intent = intent_type
 
-        # Click Freeze signal: Only engage when PINCH_STARTED or CONFIRMING state is active
-        is_engaging = (self.left_click.state in (ClickState.PINCH_STARTED, ClickState.CONFIRMING))
-        return UserIntent(intent_type, raw_x, raw_y, dist_i, confidence, t_curr, is_engaging=is_engaging, interaction_id=self.left_click.interaction_id)
+        # Attach active InteractionSession to Intent (will be None if no session exists)
+        return UserIntent(intent_type, raw_x, raw_y, dist_i, confidence, t_curr, session=self.left_click.session)
 
 
 # =============================================================================

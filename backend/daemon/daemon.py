@@ -437,6 +437,16 @@ def main():
                             new_intent.type = IntentType.MOVE_CURSOR
                         t_gest = time.perf_counter() - t_gest_start
                         
+                        # Process click events directly (Bypass MotionEngine)
+                        from pipeline_types import CommandType, ActionCommand, ClickEvent
+                        if new_intent.session:
+                            while new_intent.session.pending_events:
+                                event = new_intent.session.pending_events.popleft()
+                                if event == ClickEvent.DOWN:
+                                    action_executor.execute(ActionCommand(CommandType.LEFT_DOWN, interaction_id=new_intent.session.interaction_id))
+                                elif event == ClickEvent.UP:
+                                    action_executor.execute(ActionCommand(CommandType.LEFT_UP, interaction_id=new_intent.session.interaction_id))
+
                         t_mot_start = time.perf_counter()
                         action_cmd = motion_engine.process(new_intent, config, env_penalty, dt)
                         t_mot = time.perf_counter() - t_mot_start

@@ -160,26 +160,6 @@ class ActionExecutor:
 
         interaction_id = getattr(command, "interaction_id", "")
         if command.type == CommandType.MOVE_CURSOR:
-            if self.is_left_down:
-                try:
-                    from logger import system_logger
-                    system_logger.info(f"[OS_INJECT] ID:{interaction_id} LEFT_UP (MOVE_CURSOR) at {time.perf_counter():.6f}")
-                except Exception:
-                    pass
-                self.mouse.left_up()
-                self.is_left_down = False
-            self.mouse.set_cursor_pos(command.x, command.y)
-            return
-            
-        if command.type == CommandType.DRAG:
-            if not self.is_left_down:
-                try:
-                    from logger import system_logger
-                    system_logger.info(f"[OS_INJECT] ID:{interaction_id} LEFT_DOWN (DRAG_START) at {time.perf_counter():.6f}")
-                except Exception:
-                    pass
-                self.mouse.left_down()
-                self.is_left_down = True
             self.mouse.set_cursor_pos(command.x, command.y)
             return
 
