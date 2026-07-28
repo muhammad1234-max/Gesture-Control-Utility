@@ -158,11 +158,12 @@ class ActionExecutor:
             self.scroll_active = False
             self.zoom_active = False
 
+        interaction_id = getattr(command, "interaction_id", "")
         if command.type == CommandType.MOVE_CURSOR:
             if self.is_left_down:
                 try:
                     from logger import system_logger
-                    system_logger.info(f"[ClickPipeline] ActionExecutor injecting LEFT_UP (MOVE_CURSOR) at {time.perf_counter():.3f}")
+                    system_logger.info(f"[OS_INJECT] ID:{interaction_id} LEFT_UP (MOVE_CURSOR) at {time.perf_counter():.6f}")
                 except Exception:
                     pass
                 self.mouse.left_up()
@@ -172,6 +173,11 @@ class ActionExecutor:
             
         if command.type == CommandType.DRAG:
             if not self.is_left_down:
+                try:
+                    from logger import system_logger
+                    system_logger.info(f"[OS_INJECT] ID:{interaction_id} LEFT_DOWN (DRAG_START) at {time.perf_counter():.6f}")
+                except Exception:
+                    pass
                 self.mouse.left_down()
                 self.is_left_down = True
             self.mouse.set_cursor_pos(command.x, command.y)
@@ -181,7 +187,7 @@ class ActionExecutor:
             if not self.is_left_down:
                 try:
                     from logger import system_logger
-                    system_logger.info(f"[ClickPipeline] ActionExecutor injecting LEFT_DOWN at {time.perf_counter():.3f}")
+                    system_logger.info(f"[OS_INJECT] ID:{interaction_id} LEFT_DOWN at {time.perf_counter():.6f}")
                 except Exception:
                     pass
                 self.mouse.left_down()
@@ -192,7 +198,7 @@ class ActionExecutor:
             if self.is_left_down:
                 try:
                     from logger import system_logger
-                    system_logger.info(f"[ClickPipeline] ActionExecutor injecting LEFT_UP at {time.perf_counter():.3f}")
+                    system_logger.info(f"[OS_INJECT] ID:{interaction_id} LEFT_UP at {time.perf_counter():.6f}")
                 except Exception:
                     pass
                 self.mouse.left_up()
@@ -200,6 +206,11 @@ class ActionExecutor:
             return
 
         if command.type == CommandType.RIGHT_CLICK:
+            try:
+                from logger import system_logger
+                system_logger.info(f"[OS_INJECT] ID:{interaction_id} RIGHT_CLICK at {time.perf_counter():.6f}")
+            except Exception:
+                pass
             self.mouse.right_down()
             self.mouse.right_up()
             return

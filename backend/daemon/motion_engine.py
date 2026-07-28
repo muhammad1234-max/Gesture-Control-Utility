@@ -24,8 +24,8 @@ class MotionEngine:
         self.midas_active_until = 0.0
         self.was_dragging = False
         self.drop_stabilize_until = 0.0
-        self.click_anchor_x = None
-        self.click_anchor_y = None
+        self.locked_cursor_x = None
+        self.locked_cursor_y = None
         self.last_still_x = None
         self.last_still_y = None
         
@@ -193,19 +193,20 @@ class MotionEngine:
             if self.smoothed_x is not None:
                 self.last_still_x = self.smoothed_x
                 self.last_still_y = self.smoothed_y
-            self.click_anchor_x = None
-            self.click_anchor_y = None
+            self.locked_cursor_x = None
+            self.locked_cursor_y = None
 
-        # Pre-Click & Click Anchor Lock: Freeze cursor at exact target position during finger closure
-        if intent.type in [IntentType.LEFT_CLICK, IntentType.RIGHT_CLICK] or intent.is_engaging:
-            if self.click_anchor_x is None:
-                self.click_anchor_x = self.last_still_x if self.last_still_x is not None else self.smoothed_x
-                self.click_anchor_y = self.last_still_y if self.last_still_y is not None else self.smoothed_y
-            pred_x = self.click_anchor_x
-            pred_y = self.click_anchor_y
+        # Pre-Click Anchor Lock: Freeze cursor exactly at target position ONLY during finger closure (40-80ms)
+        # Once the click confirms (LEFT_CLICK or RIGHT_CLICK), the cursor is UNLOCKED so it continues moving seamlessly.
+        if intent.is_engaging:
+            if self.locked_cursor_x is None:
+                self.locked_cursor_x = self.last_still_x if self.last_still_x is not None else self.smoothed_x
+                self.locked_cursor_y = self.last_still_y if self.last_still_y is not None else self.smoothed_y
+            pred_x = self.locked_cursor_x
+            pred_y = self.locked_cursor_y
         else:
-            self.click_anchor_x = None
-            self.click_anchor_y = None
+            self.locked_cursor_x = None
+            self.locked_cursor_y = None
             pred_x = max(0, min(pred_x, screen_w - 1))
             pred_y = max(0, min(pred_y, screen_h - 1))
         
@@ -222,7 +223,10 @@ class MotionEngine:
         
 
         # Output Command
+        interaction_id = getattr(intent, "interaction_id", "")
         if intent.type == IntentType.DRAG:
-            return ActionCommand(CommandType.DRAG, pred_x, pred_y)
+            return ActionCommand(CommandType.DRAG, pred_x, pred_y, interaction_id=interaction_id)
+        elif intent.type == IntentType.LEFT_CLICK:
+            return ActionCommand(CommandType.LEFT_DOWN, pred_x, pred_y, interaction_id=interaction_id)
         
-        return ActionCommand(CommandType.MOVE_CURSOR, pred_x, pred_y)
+        return ActionCommand(CommandType.MOVE_CURSOR, pred_x, pred_y, interaction_id=interaction_id)

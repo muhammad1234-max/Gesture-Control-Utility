@@ -47,90 +47,206 @@ class MockMouse:
 # ClickStateMachine — Standalone replication of ClickModule state machine
 # Extracted rules from modules/click_module.py, preserving every constant.
 # =============================================================================
+import uuid
+
 class ClickState:
     IDLE = 0
-    ENGAGING = 1
-    PRESSED = 2
-    RELEASING = 3
-    COOLDOWN = 4
+    PINCH_STARTED = 1
+    CONFIRMING = 2
+    CLICK_DOWN = 3
+    HELD = 4
+    LOST_TRACKING = 5
+    RELEASE = 6
+    COOLDOWN = 7
 
 class ClickStateMachine:
     """
-    Independent replication of the ClickModule state machine.
+    Production Event-Driven Click State Machine.
     
-    Rules extracted from click_module.py:
-    - base_on threshold: 0.04 (scale-normalized)
-    - base_off threshold: 0.06 (scale-normalized)
-    - scale_mult = hand_scale / 0.1
-    - CONFIRM_MS: 60ms (scaled by 1/env_penalty)
-    - DEBOUNCE_MS: 80ms (scaled by 1/env_penalty)
-    - COOLDOWN_MS: 100ms (not env-scaled)
-    - GRACE_MS: 150ms
-    - Intent check: distance < on_thresh AND avg_conf > 0.65
-    - Session adaptation: base_on = 0.95*base_on + 0.05*max(0.01, min_dist+0.01)
+    Features:
+    - Fused Dual-Confidence Model (Geometry Score x MediaPipe Tracking Confidence)
+    - Schmitt Trigger Hysteresis (0.60 ON / 0.30 OFF)
+    - Dual-Path Drag Activation (350ms Hold Time OR 0.06 Spatial Displacement)
+    - 200ms LOST_TRACKING Grace Recovery Window
+    - Unique Interaction UUIDs (clk_xxxx) and structured lifecycle transition logging
     """
     def __init__(self, name):
         self.name = name
         self.state = ClickState.IDLE
         self.state_enter_time = 0.0
         
-        # Scale-normalized Base Thresholds (from click_module.py L21-22)
-        self.base_on = 0.06
-        self.base_off = 0.08
+        self.threshold_on = 0.60
+        self.threshold_off = 0.30
+        self.pre_engage_threshold = 0.40
         
-        # Timings (zero-cooldown instant clicks)
-        self.CONFIRM_MS = 0.0  # triggers instantly
-        self.DEBOUNCE_MS = 0.0
-        self.COOLDOWN_MS = 0.0
-        self.GRACE_MS = 0.0
-        self.min_dist_during_press = 1.0
+        self.confidence_accumulator = 0.0
+        self.HOLD_TIME_MS = 350.0
+        self.DRAG_DIST_THRESHOLD = 0.06
+        self.LOST_TRACKING_GRACE_MS = 200.0
+        self.COOLDOWN_MS = 80.0
         
-        self.last_seen_valid_time = 0.0
+        self.interaction_id = ""
+        self.press_start_time = 0.0
+        self.press_anchor_x = 0.0
+        self.press_anchor_y = 0.0
         self.is_pressed = False
+        self.is_dragging = False
+        self.lost_tracking_time = 0.0
+        self.pre_click_anchor_x = 0.0
+        self.pre_click_anchor_y = 0.0
+        self.pre_click_drift = 0.0
+        self.locked_palm_x = 0.0
+        self.locked_palm_y = 0.0
 
-    def _change_state(self, new_state, t_curr):
+    def _change_state(self, new_state, t_curr, reason=""):
+        state_names = {
+            0: 'IDLE', 1: 'PINCH_STARTED', 2: 'CONFIRMING',
+            3: 'CLICK_DOWN', 4: 'HELD', 5: 'LOST_TRACKING',
+            6: 'RELEASE', 7: 'COOLDOWN'
+        }
+        old_name = state_names.get(self.state, str(self.state))
+        new_name = state_names.get(new_state, str(new_state))
+        
+        if new_state == ClickState.PINCH_STARTED and not self.interaction_id:
+            self.interaction_id = f"clk_{uuid.uuid4().hex[:6]}"
+            
         try:
             from logger import system_logger
-            state_names = {0: 'IDLE', 1: 'ENGAGING', 2: 'PRESSED', 3: 'RELEASING', 4: 'COOLDOWN'}
-            system_logger.info(f"[ClickPipeline] {self.name} {state_names[self.state]} -> {state_names[new_state]} at {t_curr:.3f}")
+            system_logger.info(
+                f"[ClickPipeline] ID:{self.interaction_id} {self.name} {old_name} -> {new_name} "
+                f"at {t_curr:.3f}s | Reason: {reason} | Acc:{self.confidence_accumulator:.2f}"
+            )
+            semantic_event = "TRANSITION"
+            if new_state == ClickState.PINCH_STARTED: semantic_event = "LOCK_ACQUIRED"
+            elif old_state in (ClickState.PINCH_STARTED, ClickState.CONFIRMING) and new_state == ClickState.IDLE: 
+                semantic_event = "MOVEMENT_CANCELLED" if "Drift exceeded" in reason else "LOCK_RELEASED"
+            elif old_state in (ClickState.PINCH_STARTED, ClickState.CONFIRMING) and new_state == ClickState.CLICK_DOWN:
+                semantic_event = "CLICK_CONFIRMED"
+            elif new_state == ClickState.HELD: semantic_event = "DRAG_STARTED"
+            elif old_state == ClickState.CLICK_DOWN and new_state == ClickState.RELEASE: semantic_event = "LOCK_RELEASED"
+
+            diag_buffer.append("ClickPipeline", "STATE_TRANSITION", {
+                "interaction_id": self.interaction_id,
+                "name": self.name,
+                "semantic_event": semantic_event,
+                "old_state": old_name,
+                "new_state": new_name,
+                "reason": reason,
+                "accumulator": round(self.confidence_accumulator, 2),
+                "suppressed_drift": round(getattr(self, 'pre_click_drift', 0.0) * 1000, 2),
+                "lock_duration_ms": round((t_curr - self.state_enter_time) * 1000, 2),
+                "locked_position": {"x": round(self.pre_click_anchor_x, 3), "y": round(self.pre_click_anchor_y, 3)},
+                "timestamp": round(t_curr, 3)
+            })
         except Exception:
             pass
+
         self.state = new_state
         self.state_enter_time = t_curr
         
-        if new_state == ClickState.PRESSED and not self.is_pressed:
+        if new_state in (ClickState.CLICK_DOWN, ClickState.HELD):
             self.is_pressed = True
-        elif new_state in (ClickState.RELEASING, ClickState.COOLDOWN, ClickState.IDLE) and self.is_pressed:
+        elif new_state in (ClickState.RELEASE, ClickState.COOLDOWN, ClickState.IDLE):
             self.is_pressed = False
+            self.is_dragging = False
+            if new_state == ClickState.IDLE:
+                self.interaction_id = ""
 
-    def process(self, click_score, confidence_history, t_curr, env_penalty=1.0):
-        avg_conf = sum(confidence_history) / len(confidence_history) if confidence_history else 0.0
-        
-        # Precise click thresholds: score > 0.60 engages physical pinch, score < 0.30 releases
-        intent_met = click_score > 0.60 and (avg_conf > 0.40 or len(confidence_history) == 0)
-        release_met = click_score < 0.30
-        
+    def process(self, click_score, confidence_history, t_curr, env_penalty=1.0, raw_x=0.0, raw_y=0.0, has_hand=True, config=None, palm_x=0.0, palm_y=0.0):
+        if config and hasattr(config, "state"):
+            self.threshold_on = config.state.get("pinch_sensitivity_on", 0.60)
+            self.threshold_off = config.state.get("pinch_sensitivity_off", 0.30)
+            self.HOLD_TIME_MS = config.state.get("hold_delay_ms", 350.0)
+            self.DRAG_DIST_THRESHOLD = config.state.get("drag_distance", 0.06)
+            self.COOLDOWN_MS = config.state.get("debounce_ms", 80.0)
+            
+        avg_conf = sum(confidence_history) / len(confidence_history) if (confidence_history and len(confidence_history) > 0) else (1.0 if has_hand else 0.0)
+        # Fused Dual-Confidence Model
+        fused_conf = click_score * avg_conf if has_hand else 0.0
         elapsed_ms = (t_curr - self.state_enter_time) * 1000.0
         
         if self.state == ClickState.IDLE:
-            if intent_met:
-                self._change_state(ClickState.PRESSED, t_curr)
-                self.last_seen_valid_time = t_curr
+            if has_hand and click_score > self.pre_engage_threshold:
+                self.confidence_accumulator = 0.35
+                self.pre_click_anchor_x = raw_x
+                self.pre_click_anchor_y = raw_y
+                self.locked_palm_x = palm_x
+                self.locked_palm_y = palm_y
+                self.pre_click_drift = 0.0
+                self._change_state(ClickState.PINCH_STARTED, t_curr, "Geometry score > 0.40")
+                
+        elif self.state in (ClickState.PINCH_STARTED, ClickState.CONFIRMING):
+            if has_hand:
+                # Drift cancellation is based strictly on palm displacement, isolating finger flexion
+                drift = math.sqrt((palm_x - self.locked_palm_x)**2 + (palm_y - self.locked_palm_y)**2)
+                self.pre_click_drift = max(self.pre_click_drift, drift)
+                
+                # Drift cancellation: >25px (approx 0.025 normalized) cancels the click entirely
+                if self.pre_click_drift > 0.025:
+                    self._change_state(ClickState.IDLE, t_curr, f"REJECTED: Drift exceeded ({self.pre_click_drift*1000:.1f}px)")
+                    return
 
-        elif self.state == ClickState.ENGAGING:
-            if intent_met:
-                self._change_state(ClickState.PRESSED, t_curr)
-            else:
-                self._change_state(ClickState.IDLE, t_curr)
+            if self.state == ClickState.PINCH_STARTED:
+                if not has_hand:
+                    self._change_state(ClickState.IDLE, t_curr, "Hand tracking lost")
+                elif click_score > self.threshold_on:
+                    self.confidence_accumulator += 0.35
+                    if self.confidence_accumulator >= 1.0:
+                        self.press_start_time = t_curr
+                        self.press_anchor_x = raw_x
+                        self.press_anchor_y = raw_y
+                        self._change_state(ClickState.CLICK_DOWN, t_curr, "Fused confidence >= 1.0")
+                    else:
+                        self._change_state(ClickState.CONFIRMING, t_curr, "Accumulating confidence")
+                elif click_score < self.pre_engage_threshold:
+                    self._change_state(ClickState.IDLE, t_curr, "REJECTED: CONFIDENCE_DECAY")
 
-        elif self.state == ClickState.PRESSED:
-            if release_met:
-                self._change_state(ClickState.IDLE, t_curr)
-            else:
-                self.last_seen_valid_time = t_curr
+            elif self.state == ClickState.CONFIRMING:
+                if not has_hand:
+                    self._change_state(ClickState.IDLE, t_curr, "Hand tracking lost")
+                elif click_score > self.threshold_on:
+                    self.confidence_accumulator += 0.35
+                    if self.confidence_accumulator >= 1.0:
+                        self.press_start_time = t_curr
+                        self.press_anchor_x = raw_x
+                        self.press_anchor_y = raw_y
+                        self._change_state(ClickState.CLICK_DOWN, t_curr, "Fused confidence confirmed")
+                elif click_score < self.threshold_off:
+                    self.confidence_accumulator = max(0.0, self.confidence_accumulator - 0.30)
+                    if self.confidence_accumulator <= 0.0:
+                        self._change_state(ClickState.IDLE, t_curr, "REJECTED: CONFIDENCE_DECAY")
 
-        elif self.state == ClickState.RELEASING or self.state == ClickState.COOLDOWN:
-            self._change_state(ClickState.IDLE, t_curr)
+        elif self.state == ClickState.CLICK_DOWN:
+            dist_moved = math.sqrt((raw_x - self.press_anchor_x)**2 + (raw_y - self.press_anchor_y)**2)
+            if not has_hand:
+                self.lost_tracking_time = t_curr
+                self._change_state(ClickState.LOST_TRACKING, t_curr, "Landmark drop during click")
+            elif click_score < self.threshold_off:
+                self._change_state(ClickState.RELEASE, t_curr, "Tap completed (< 350ms)")
+            elif elapsed_ms >= self.HOLD_TIME_MS or dist_moved > self.DRAG_DIST_THRESHOLD:
+                self.is_dragging = True
+                self._change_state(ClickState.HELD, t_curr, f"Hold/Drag threshold met (elapsed={elapsed_ms:.0f}ms, dist={dist_moved:.3f})")
+
+        elif self.state == ClickState.HELD:
+            if not has_hand:
+                self.lost_tracking_time = t_curr
+                self._change_state(ClickState.LOST_TRACKING, t_curr, "Landmark drop during drag")
+            elif click_score < self.threshold_off:
+                self._change_state(ClickState.RELEASE, t_curr, "Pinch released during drag")
+
+        elif self.state == ClickState.LOST_TRACKING:
+            lost_elapsed_ms = (t_curr - self.lost_tracking_time) * 1000.0
+            if has_hand and click_score > self.threshold_off:
+                self._change_state(ClickState.HELD if self.is_dragging else ClickState.CLICK_DOWN, t_curr, "Tracking recovered within 200ms grace window")
+            elif lost_elapsed_ms > self.LOST_TRACKING_GRACE_MS:
+                self._change_state(ClickState.RELEASE, t_curr, "REJECTED: LOST_TRACKING grace window expired (> 200ms)")
+
+        elif self.state == ClickState.RELEASE:
+            self._change_state(ClickState.COOLDOWN, t_curr, "Click up executed")
+
+        elif self.state == ClickState.COOLDOWN:
+            if elapsed_ms >= self.COOLDOWN_MS:
+                self._change_state(ClickState.IDLE, t_curr, "Cooldown finished")
 
 
 # =============================================================================
@@ -198,7 +314,7 @@ class GestureEngine:
         self.press_anchor_x = 0.0
         self.press_anchor_y = 0.0
 
-    def detect_intent(self, tracking_data, legacy_manager=None, mock_mouse=None) -> UserIntent:
+    def detect_intent(self, tracking_data, legacy_manager=None, mock_mouse=None, config=None) -> UserIntent:
         """
         When mock_mouse is provided: LEGACY MODE — reads MockMouse side-effects.
         When mock_mouse is None: INDEPENDENT MODE — uses internal state machines only.
@@ -274,6 +390,11 @@ class GestureEngine:
         left_click_score = tracking_data.get("left_click_score", 0.0)
         right_click_score = tracking_data.get("right_click_score", 0.0)
 
+        # Extract palm center for stable drift tracking
+        landmarks = tracking_data.get("landmarks", [])
+        palm_x = landmarks[9]["x"] if landmarks and len(landmarks) > 9 else raw_x
+        palm_y = landmarks[9]["y"] if landmarks and len(landmarks) > 9 else raw_y
+
         # Block right click if peace sign is active or engaging to prevent accidental clicks
         if scroll_pose or self.scroll.is_active:
             self.right_click._change_state(ClickState.IDLE, t_curr)
@@ -281,8 +402,8 @@ class GestureEngine:
             right_click_score = 0.0
 
         # Step 1: Feed all state machines (mirrors daemon.py processing order)
-        self.left_click.process(left_click_score, conf_hist, t_curr, env_penalty)
-        self.right_click.process(right_click_score, conf_hist, t_curr, env_penalty)
+        self.left_click.process(left_click_score, conf_hist, t_curr, env_penalty, raw_x=raw_x, raw_y=raw_y, has_hand=has_hand, config=config, palm_x=palm_x, palm_y=palm_y)
+        self.right_click.process(right_click_score, conf_hist, t_curr, env_penalty, raw_x=raw_x, raw_y=raw_y, has_hand=has_hand, config=config, palm_x=palm_x, palm_y=palm_y)
         
         # Extend grace period for ZOOM if confidence drops (e.g., due to fist obscuring landmarks)
         if self.zoom.is_active and confidence < 0.7:
@@ -312,9 +433,7 @@ class GestureEngine:
         self.zoom.process_pose(debounced_zoom_pose, confidence, t_curr)
         
         # Step 2: Priority Arbitration
-        # Replicate PriorityManager from interaction_manager.py L102-136
         # Priority: ZOOM(80) > SCROLL(70) > LEFT_CLICK(50) = RIGHT_CLICK(50) > CURSOR(10)
-        
         intent_type = IntentType.MOVE_CURSOR
         
         if self.zoom.is_active:
@@ -323,27 +442,14 @@ class GestureEngine:
             intent_type = IntentType.SCROLL
         elif self.right_click.is_pressed:
             intent_type = IntentType.RIGHT_CLICK
+        elif self.left_click.is_dragging:
+            intent_type = IntentType.DRAG
+            self.is_dragging = True
         elif self.left_click.is_pressed:
-            if not self.press_start_time:
-                self.press_start_time = t_curr
-                self.press_anchor_x = raw_x
-                self.press_anchor_y = raw_y
-                self.is_dragging = False
-                intent_type = IntentType.LEFT_CLICK
-            else:
-                elapsed_ms = (t_curr - self.press_start_time) * 1000.0
-                dist_moved = math.sqrt((raw_x - self.press_anchor_x)**2 + (raw_y - self.press_anchor_y)**2)
-                
-                # DRAG requires deliberate hold (>= 500ms) AND physical displacement (> 0.08)
-                if elapsed_ms >= 500.0 and dist_moved > 0.08:
-                    self.is_dragging = True
-                    intent_type = IntentType.DRAG
-                else:
-                    self.is_dragging = False
-                    intent_type = IntentType.LEFT_CLICK
+            intent_type = IntentType.LEFT_CLICK
+            self.is_dragging = False
         else:
             self.is_dragging = False
-            self.press_start_time = 0.0
             intent_type = IntentType.MOVE_CURSOR
 
         # State Transition Logging (Priority 1)
@@ -351,7 +457,6 @@ class GestureEngine:
             try:
                 from logger import system_logger
                 
-                # Try to get reason
                 reason = "Default"
                 if intent_type == IntentType.ZOOM: reason = "Zoom threshold met"
                 elif intent_type == IntentType.SCROLL: reason = "Scroll threshold met"
@@ -361,7 +466,7 @@ class GestureEngine:
                 elif intent_type == IntentType.MOVE_CURSOR: reason = "Gestures released"
                 
                 system_logger.info(
-                    f"\n[INTERACTION STATE] {self.current_intent.name} \n"
+                    f"\n[INTERACTION STATE] ID:{self.left_click.interaction_id} {self.current_intent.name} \n"
                     f"↓\n"
                     f"{intent_type.name}\n"
                     f"Reason: {reason}\n"
@@ -369,6 +474,7 @@ class GestureEngine:
                 )
                 from diagnostic_buffer import diag_buffer
                 diag_buffer.append("GestureEngine", "STATE_TRANSITION", {
+                    "interaction_id": self.left_click.interaction_id,
                     "old_state": self.current_intent.name,
                     "new_state": intent_type.name,
                     "reason": reason,
@@ -377,17 +483,16 @@ class GestureEngine:
                         "right_click": self.right_click.is_pressed,
                         "scroll": self.scroll.is_active,
                         "zoom": self.zoom.is_active,
-                        "dragging": self.is_dragging
+                        "dragging": self.left_click.is_dragging
                     }
                 })
             except Exception:
                 pass
             self.current_intent = intent_type
 
-        # Click Freeze signal: Only engage when fingers are actively closing to pinch (score > 0.45)
-        # Prevents normal cursor movement from triggering random cursor freezes!
-        is_engaging = (left_click_score > 0.45 and not self.left_click.is_pressed) or (self.left_click.state == ClickState.ENGAGING)
-        return UserIntent(intent_type, raw_x, raw_y, dist_i, confidence, t_curr, is_engaging=is_engaging)
+        # Click Freeze signal: Only engage when PINCH_STARTED or CONFIRMING state is active
+        is_engaging = (self.left_click.state in (ClickState.PINCH_STARTED, ClickState.CONFIRMING))
+        return UserIntent(intent_type, raw_x, raw_y, dist_i, confidence, t_curr, is_engaging=is_engaging, interaction_id=self.left_click.interaction_id)
 
 
 # =============================================================================

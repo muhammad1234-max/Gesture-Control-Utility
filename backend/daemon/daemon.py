@@ -431,7 +431,7 @@ def main():
                         pass
                     else:
                         t_gest_start = time.perf_counter()
-                        new_intent = gesture_engine.detect_intent(validated_dict)
+                        new_intent = gesture_engine.detect_intent(validated_dict, config=config)
                         if state.get("force_move_only", False):
                             from pipeline_types import IntentType
                             new_intent.type = IntentType.MOVE_CURSOR
