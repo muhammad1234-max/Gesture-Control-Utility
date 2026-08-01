@@ -9,6 +9,7 @@ from mouse_controller import MouseController
 from health_manager import HealthManager
 from performance_monitor import PerformanceMonitor
 from config import BackendConfig
+from pipeline_types import CursorLockManager
 
 class SystemContext:
     """
@@ -20,8 +21,10 @@ class SystemContext:
         self.camera = CameraStream()
         self.tracker = HandTracker()
         self.reliability = ReliabilityEngine()
-        self.gesture = GestureEngine()
-        self.motion = MotionEngine(get_screen_size_func)
+        
+        self.lock_manager = CursorLockManager()
+        self.gesture = GestureEngine(self.lock_manager)
+        self.motion = MotionEngine(get_screen_size_func, self.lock_manager)
         self.action = ActionExecutor(self.mouse)
         
         self.health = HealthManager()

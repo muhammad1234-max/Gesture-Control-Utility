@@ -1,5 +1,48 @@
 from enum import Enum, auto
 from collections import deque
+import threading
+
+class LockReason(Enum):
+    NONE = auto()
+    CLICK = auto()
+    DRAG = auto()
+
+class CursorLockManager:
+    def __init__(self):
+        self.locked = False
+        self.reason = LockReason.NONE
+        self.anchor_x = None
+        self.anchor_y = None
+        self.lock = threading.Lock()
+
+    def acquire(self, reason: LockReason, x: float, y: float) -> bool:
+        with self.lock:
+            if self.locked and self.reason == reason:
+                return True
+            if not self.locked:
+                self.locked = True
+                self.reason = reason
+                self.anchor_x = x
+                self.anchor_y = y
+                return True
+            return False
+
+    def replace_owner(self, new_reason: LockReason) -> bool:
+        with self.lock:
+            if not self.locked:
+                return False
+            self.reason = new_reason
+            return True
+
+    def release(self, reason: LockReason) -> bool:
+        with self.lock:
+            if self.locked and self.reason == reason:
+                self.locked = False
+                self.reason = LockReason.NONE
+                self.anchor_x = None
+                self.anchor_y = None
+                return True
+            return False
 
 class IntentType(Enum):
     MOVE_CURSOR = auto()
@@ -16,6 +59,8 @@ class ClickEvent(Enum):
     NONE = auto()
     DOWN = auto()
     UP = auto()
+    RIGHT_DOWN = auto()
+    RIGHT_UP = auto()
 
 class InteractionSession:
     __slots__ = ['interaction_id', 'pending_events', 'cursor_locked', 'unlock_time', 'is_active']
@@ -25,6 +70,12 @@ class InteractionSession:
         self.cursor_locked = False
         self.unlock_time = 0.0
         self.is_active = True
+
+    def destroy(self):
+        # Active cleanup enforcement (Stage 6B)
+        self.pending_events.clear()
+        self.cursor_locked = False
+        self.is_active = False
 
 class UserIntent:
     __slots__ = ['type', 'raw_x', 'raw_y', 'pinch_distance', 'confidence', 'timestamp', 'session']
@@ -42,7 +93,8 @@ class CommandType(Enum):
     DRAG = auto()
     LEFT_DOWN = auto()
     LEFT_UP = auto()
-    RIGHT_CLICK = auto()
+    RIGHT_DOWN = auto()
+    RIGHT_UP = auto()
     SCROLL = auto()
     ZOOM = auto()
     NONE = auto()

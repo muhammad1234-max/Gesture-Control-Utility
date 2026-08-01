@@ -51,15 +51,7 @@ class ActionExecutor:
             real_dt = max(last_time - t_curr + sleep_time, 0.001)
 
             with self.lock:
-                # Interaction Watchdog (Priority 7)
-                if (t_curr - self.last_intent_update_time) > 2.0:
-                    if self.scroll_active or self.zoom_active or self.is_left_down or self.mouse.ctrl_pressed:
-                        try:
-                            from logger import system_logger
-                            system_logger.warning("ActionExecutor Watchdog | Intent stale > 2.0s! Executing emergency OS input cleanup.")
-                        except Exception:
-                            pass
-                        self._release_all_inputs_unlocked()
+                # Interaction Watchdog (Removed in Stage 6B - centralized to GestureEngine)
 
                 if self.scroll_active: pass
                 else:
@@ -97,25 +89,6 @@ class ActionExecutor:
         self.running = False
         if self.thread.is_alive():
             self.thread.join()
-
-    def _release_all_inputs_unlocked(self):
-        """Internal helper for emergency cleanup without acquiring lock."""
-        self.scroll_active = False
-        self.zoom_active = False
-        self.scroll_velocity = 0.0
-        self.zoom_velocity = 0.0
-        self.is_left_down = False
-        self.mouse.release_all()
-        try:
-            from logger import system_logger
-            system_logger.info("ActionExecutor | Executed release_all_inputs (OS Input Cleanup)")
-        except Exception:
-            pass
-
-    def release_all_inputs(self):
-        """OS Input Cleanup (Priority 5 & 6)"""
-        with self.lock:
-            self._release_all_inputs_unlocked()
 
     def execute(self, command: ActionCommand):
         with self.lock:
@@ -185,12 +158,22 @@ class ActionExecutor:
                 self.is_left_down = False
             return
 
-        if command.type == CommandType.RIGHT_CLICK:
-            try:
-                from logger import system_logger
-                system_logger.info(f"[OS_INJECT] ID:{interaction_id} RIGHT_CLICK at {time.perf_counter():.6f}")
-            except Exception:
-                pass
-            self.mouse.right_down()
-            self.mouse.right_up()
+        if command.type == CommandType.RIGHT_DOWN:
+            if not self.mouse.right_pressed:
+                try:
+                    from logger import system_logger
+                    system_logger.info(f"[OS_INJECT] ID:{interaction_id} RIGHT_DOWN at {time.perf_counter():.6f}")
+                except Exception:
+                    pass
+                self.mouse.right_down()
+            return
+
+        if command.type == CommandType.RIGHT_UP:
+            if self.mouse.right_pressed:
+                try:
+                    from logger import system_logger
+                    system_logger.info(f"[OS_INJECT] ID:{interaction_id} RIGHT_UP at {time.perf_counter():.6f}")
+                except Exception:
+                    pass
+                self.mouse.right_up()
             return

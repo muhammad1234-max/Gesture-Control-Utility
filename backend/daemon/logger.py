@@ -25,6 +25,8 @@ class StructuredFormatter(logging.Formatter):
             
         return json.dumps(log_obj)
 
+import sys
+
 def get_logger(name="GestureDaemon"):
     logger = logging.getLogger(name)
     if not logger.handlers:
@@ -38,6 +40,10 @@ def get_logger(name="GestureDaemon"):
         handler = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=5)
         handler.setFormatter(StructuredFormatter())
         logger.addHandler(handler)
+
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setFormatter(StructuredFormatter())
+        logger.addHandler(stream_handler)
         
     return logger
 

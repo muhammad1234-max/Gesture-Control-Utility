@@ -10,6 +10,8 @@ class BackendConfig:
             "sensitivity": 0.5,
             "smoothing": 0.5,
             "pinch_threshold": 0.05,
+            "cursor_min_cutoff": 0.20,
+            "cursor_beta": 0.002,
             "camera_id": 0,
             "calibration": {},
             "calibration_mode": False,
@@ -48,6 +50,16 @@ class BackendConfig:
             val = float(payload["pinch_threshold"])
             if 0.01 <= val <= 0.3: self.state["pinch_threshold"] = val
             else: system_logger.warning("Invalid pinch_threshold. Must be 0.01 - 0.3")
+            
+        if "cursor_min_cutoff" in payload:
+            val = float(payload["cursor_min_cutoff"])
+            if 0.001 <= val <= 10.0: self.state["cursor_min_cutoff"] = val
+            else: system_logger.warning("Invalid cursor_min_cutoff. Must be 0.001 - 10.0")
+
+        if "cursor_beta" in payload:
+            val = float(payload["cursor_beta"])
+            if 0.0001 <= val <= 1.0: self.state["cursor_beta"] = val
+            else: system_logger.warning("Invalid cursor_beta. Must be 0.0001 - 1.0")
             
         if "camera_id" in payload:
             val = int(payload["camera_id"])

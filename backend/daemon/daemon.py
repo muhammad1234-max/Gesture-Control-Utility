@@ -94,6 +94,20 @@ def main():
     
     system_logger.info(f"[Startup Audit] Effective force_move_only: {state['force_move_only']}")
 
+    def perform_emergency_stop():
+        try:
+            from pipeline_types import CommandType, ActionCommand, ClickEvent
+            for interaction_id, side, event in gesture_engine.emergency_stop(time.perf_counter()):
+                if side == "LEFT":
+                    if event == ClickEvent.DOWN: action_executor.execute(ActionCommand(CommandType.LEFT_DOWN, interaction_id=interaction_id))
+                    elif event == ClickEvent.UP: action_executor.execute(ActionCommand(CommandType.LEFT_UP, interaction_id=interaction_id))
+                elif side == "RIGHT":
+                    if event == ClickEvent.DOWN: action_executor.execute(ActionCommand(CommandType.RIGHT_DOWN, interaction_id=interaction_id))
+                    elif event == ClickEvent.UP: action_executor.execute(ActionCommand(CommandType.RIGHT_UP, interaction_id=interaction_id))
+            action_executor.execute(ActionCommand(CommandType.NONE))
+        except Exception as e:
+            pass
+
     def listen_for_commands():
         while state["running"]:
             line = sys.stdin.readline()
@@ -163,7 +177,7 @@ def main():
                         
                 elif action == "CLOSE_CAMERA":
                     stream.close()
-                    action_executor.release_all_inputs()
+                    perform_emergency_stop()
                     IPCEmitter.emit("CAMERA_CLOSED")
                     
                 elif action == "START_TRACKING":
@@ -172,7 +186,7 @@ def main():
                     
                 elif action == "STOP_TRACKING":
                     state["tracking"] = False
-                    action_executor.release_all_inputs()
+                    perform_emergency_stop()
                     IPCEmitter.emit("TRACKING_STOPPED")
                     
                 elif action == "GET_STATUS":
@@ -226,6 +240,8 @@ def main():
     config = ctx.config
     config.state = state
     
+    daemon_cursor_x = 0.0
+    daemon_cursor_y = 0.0
     tracking_data = {}
     
     tracker = ctx.tracker
@@ -271,6 +287,7 @@ def main():
                 continue
                 
             has_hand = False
+            rgb = None
             index_x, index_y = 0, 0
             dist_i, dist_m = 0, 0
             closing_i, closing_m, closing_r = 0, 0, 0
@@ -411,7 +428,10 @@ def main():
                 "right_click_score": intents["RIGHT_CLICK"]["intent_score"] if has_hand else 0.0,
                 "conf_hist": conf_hist,
                 "env_penalty": env_penalty,
-                "landmarks": landmarks
+                "landmarks": landmarks,
+                "screen_size": get_screen_size(),
+                "screen_cursor_x": daemon_cursor_x,
+                "screen_cursor_y": daemon_cursor_y
             })
 
             t_filter_start = time.perf_counter()
@@ -421,44 +441,50 @@ def main():
 
             try:
                 v_has_hand = validated_dict["has_hand"]
-                if v_has_hand:
-                    if not state.get("hand_detected", False):
-                        state["hand_detected"] = True
-                        IPCEmitter.emit("HAND_DETECTED", True)
-                        
-                    if state.get("calibration_mode", False):
-                        t_end = time.perf_counter()
-                        pass
-                    else:
-                        t_gest_start = time.perf_counter()
-                        new_intent = gesture_engine.detect_intent(validated_dict, config=config)
-                        if state.get("force_move_only", False):
-                            from pipeline_types import IntentType
-                            new_intent.type = IntentType.MOVE_CURSOR
-                        t_gest = time.perf_counter() - t_gest_start
-                        
-                        # Process click events directly (Bypass MotionEngine)
-                        from pipeline_types import CommandType, ActionCommand, ClickEvent
-                        if new_intent.session:
-                            while new_intent.session.pending_events:
-                                event = new_intent.session.pending_events.popleft()
-                                if event == ClickEvent.DOWN:
-                                    action_executor.execute(ActionCommand(CommandType.LEFT_DOWN, interaction_id=new_intent.session.interaction_id))
-                                elif event == ClickEvent.UP:
-                                    action_executor.execute(ActionCommand(CommandType.LEFT_UP, interaction_id=new_intent.session.interaction_id))
+                if v_has_hand and not state.get("hand_detected", False):
+                    state["hand_detected"] = True
+                    IPCEmitter.emit("HAND_DETECTED", True)
+                elif not v_has_hand and state.get("hand_detected", False):
+                    state["hand_detected"] = False
+                    IPCEmitter.emit("HAND_DETECTED", False)
 
-                        t_mot_start = time.perf_counter()
-                        action_cmd = motion_engine.process(new_intent, config, env_penalty, dt)
-                        t_mot = time.perf_counter() - t_mot_start
-                        
-                        t_act_start = time.perf_counter()
-                        action_executor.execute(action_cmd)
-                        t_act = time.perf_counter() - t_act_start
+                if state.get("calibration_mode", False):
+                    t_end = time.perf_counter()
+                    pass
                 else:
-                    if state.get("hand_detected", False):
-                        state["hand_detected"] = False
-                        action_executor.release_all_inputs()
-                        IPCEmitter.emit("HAND_DETECTED", False)
+                    # 1. Gesture Inference (Unconditional)
+                    t_gest_start = time.perf_counter()
+                    new_intent = gesture_engine.detect_intent(validated_dict, config=config)
+                    if state.get("force_move_only", False):
+                        from pipeline_types import IntentType
+                        if new_intent.type not in [IntentType.NO_HAND, IntentType.IDLE]:
+                            new_intent.type = IntentType.MOVE_CURSOR
+                    t_gest = time.perf_counter() - t_gest_start
+                    
+                    # 2. Universal Queue Draining (Stage 6B)
+                    from pipeline_types import CommandType, ActionCommand, ClickEvent
+                    for interaction_id, side, event in gesture_engine.get_pending_events():
+                        if side == "LEFT":
+                            if event == ClickEvent.DOWN: action_executor.execute(ActionCommand(CommandType.LEFT_DOWN, interaction_id=interaction_id))
+                            elif event == ClickEvent.UP: action_executor.execute(ActionCommand(CommandType.LEFT_UP, interaction_id=interaction_id))
+                        elif side == "RIGHT":
+                            if event == ClickEvent.DOWN: action_executor.execute(ActionCommand(CommandType.RIGHT_DOWN, interaction_id=interaction_id))
+                            elif event == ClickEvent.UP: action_executor.execute(ActionCommand(CommandType.RIGHT_UP, interaction_id=interaction_id))
+
+                    # 3. Motion Processing (Unconditional)
+                    t_mot_start = time.perf_counter()
+                    action_cmd = motion_engine.process(new_intent, config, env_penalty, dt)
+                    t_mot = time.perf_counter() - t_mot_start
+                    
+                    # 4. Action Execution
+                    t_act_start = time.perf_counter()
+                    
+                    if action_cmd.type in (CommandType.MOVE_CURSOR, CommandType.DRAG):
+                        daemon_cursor_x = action_cmd.x
+                        daemon_cursor_y = action_cmd.y
+                        
+                    action_executor.execute(action_cmd)
+                    t_act = time.perf_counter() - t_act_start
 
             except Exception as ex:
                 import traceback
@@ -549,8 +575,8 @@ def main():
         IPCEmitter.emit("INFO", "Executing ordered shutdown")
         system_logger.info(f"Active Python PID: {os.getpid()} - Initiating teardown")
         
-        system_logger.info("[Shutdown Audit] Step 1: Releasing inputs")
-        try: action_executor.release_all_inputs()
+        system_logger.info("[Shutdown Audit] Step 1: Performing emergency stop via GestureEngine")
+        try: perform_emergency_stop()
         except: pass
         
         system_logger.info("[Shutdown Audit] Step 2: Stopping action executor")

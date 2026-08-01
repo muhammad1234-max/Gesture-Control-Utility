@@ -4,7 +4,8 @@ from logger import system_logger
 from diagnostic_buffer import diag_buffer
 
 class MotionEngine:
-    def __init__(self, get_screen_size_func):
+    def __init__(self, get_screen_size_func, lock_manager=None):
+        self.lock_manager = lock_manager
         self.deadzone_px = 2.5
         self.min_cutoff = 0.01
         self.beta = 0.002
@@ -23,17 +24,26 @@ class MotionEngine:
         self.is_engaging = False
         self.midas_active_until = 0.0
         self.was_dragging = False
-        self.drop_stabilize_until = 0.0
-        self.locked_cursor_x = None
-        self.locked_cursor_y = None
-        self.last_still_x = None
         self.last_still_y = None
-        
         self.get_screen_size = get_screen_size_func
 
     def get_alpha(self, cutoff, dt):
         tau = 1.0 / (2 * math.pi * cutoff)
         return 1.0 / (1.0 + tau / dt)
+
+    def sync_filter_to_anchor(self, anchor_x, anchor_y, raw_x_px, raw_y_px):
+        """
+        Synchronizes internal filter state when locked.
+        smoothed tracks the frozen anchor so it resumes from the anchor.
+        last tracks raw movement so velocity (dx/dy) does not spike upon unlock.
+        """
+        self.smoothed_x = anchor_x
+        self.smoothed_y = anchor_y
+        self.last_x = raw_x_px
+        self.last_y = raw_y_px
+        self.dx_ema = 0.0
+        self.dy_ema = 0.0
+        self.is_stationary = True
 
     def process(self, intent, config, env_penalty, dt=0.033) -> ActionCommand:
         if intent.type in [IntentType.NO_HAND, IntentType.TRACKING_LOST, IntentType.IDLE]:
@@ -45,6 +55,8 @@ class MotionEngine:
         if intent.type == IntentType.RIGHT_CLICK:
             return ActionCommand(CommandType.RIGHT_CLICK)
 
+        # 1. Evaluate Scroll State (but don't return yet)
+        pending_scroll_command = None
         if intent.type in [IntentType.SCROLL, IntentType.ZOOM]:
             is_zoom = (intent.type == IntentType.ZOOM)
             current_y = intent.raw_y
@@ -52,30 +64,41 @@ class MotionEngine:
             if not hasattr(self, 'scroll_active'):
                 self.scroll_active = False
                 self.scroll_anchor = 0.5
+                self.scroll_vel_ema = 0.0
                 
             if not self.scroll_active:
                 self.scroll_active = True
                 self.scroll_anchor = current_y
-            # Do NOT decay scroll_anchor while active so hand movement maps 1:1 to continuous scrolling speed!
+                self.scroll_vel_ema = 0.0
+                
+            # Configurable constants
+            deadzone = config.state.get("scroll_deadzone", 0.030)
+            max_vel = config.state.get("scroll_max_velocity", 1400.0)
+            alpha = config.state.get("scroll_ema_alpha", 0.15)
+            max_range = config.state.get("scroll_max_range", 0.20)
+            sensitivity = 1.8 if is_zoom else 2.2
 
             delta = -(current_y - self.scroll_anchor)
-            deadzone = 0.012  # Responsive 1.2% deadzone
-            sensitivity = 1.8 if is_zoom else 2.2
             
             if abs(delta) < deadzone:
-                vel = 0.0
+                target_vel = 0.0
             else:
-                effective_delta = delta - math.copysign(deadzone, delta)
-                # High-speed responsive linear-quadratic scaling
-                speed = (abs(effective_delta) * 650.0 + (abs(effective_delta) * 15.0) ** 2.0) * sensitivity
-                vel = math.copysign(min(speed, 1400.0), effective_delta)
+                effective_delta = abs(delta) - deadzone
+                normalized = min(effective_delta / max_range, 1.0)
+                # Smooth progressive acceleration curve
+                speed = (normalized ** 2.5) * max_vel * sensitivity
+                target_vel = math.copysign(speed, delta)
+                
+            self.scroll_vel_ema = (alpha * target_vel) + ((1.0 - alpha) * self.scroll_vel_ema)
 
-            return ActionCommand(
+            pending_scroll_command = ActionCommand(
                 CommandType.ZOOM if is_zoom else CommandType.SCROLL, 
-                velocity=vel
+                velocity=self.scroll_vel_ema
             )
             
-        self.scroll_active = False
+        else:
+            self.scroll_active = False
+            self.scroll_vel_ema = 0.0
 
         # Handle Cursor Motion using 1-Euro Smoothing
         calib = config.state.get("calibration", {})
@@ -117,69 +140,65 @@ class MotionEngine:
         
         t_curr = intent.timestamp
 
-        # Update 1-Euro filter
-        if self.smoothed_x is None:
-            self.smoothed_x, self.smoothed_y = raw_x_px, raw_y_px
+        # Check lock status BEFORE filter state mutation
+        is_locked = self.lock_manager and self.lock_manager.locked
+
+        if is_locked:
+            pred_x = self.lock_manager.anchor_x
+            pred_y = self.lock_manager.anchor_y
+            self.sync_filter_to_anchor(pred_x, pred_y, raw_x_px, raw_y_px)
+            reason_not_moving = "LOCKED"
+        else:
+            # Update 1-Euro filter
+            if self.smoothed_x is None:
+                self.smoothed_x, self.smoothed_y = raw_x_px, raw_y_px
+                self.last_x, self.last_y = raw_x_px, raw_y_px
+                
+            dx = (raw_x_px - self.last_x) / dt
+            dy = (raw_y_px - self.last_y) / dt
             self.last_x, self.last_y = raw_x_px, raw_y_px
+    
+            alpha_d = self.get_alpha(self.dcutoff, dt)
+            self.dx_ema = alpha_d * dx + (1 - alpha_d) * self.dx_ema
+            self.dy_ema = alpha_d * dy + (1 - alpha_d) * self.dy_ema
+            vel = math.sqrt(self.dx_ema**2 + self.dy_ema**2)
+    
+            min_cutoff = config.state.get("cursor_min_cutoff", self.min_cutoff) if config and hasattr(config, "state") else self.min_cutoff
+            beta = config.state.get("cursor_beta", self.beta) if config and hasattr(config, "state") else self.beta
+            cutoff = min_cutoff + beta * vel
+            alpha = self.get_alpha(cutoff, dt)
+    
+            user_alpha = min(max(alpha * (user_smoothing * 2.0), 0.01), 1.0)
+            blended_alpha = user_alpha * (intent.confidence ** 2) * env_penalty
+    
+            target_x = blended_alpha * raw_x_px + (1 - blended_alpha) * self.smoothed_x
+            target_y = blended_alpha * raw_y_px + (1 - blended_alpha) * self.smoothed_y
+    
+            raw_dist_px = math.sqrt((raw_x_px - self.smoothed_x)**2 + (raw_y_px - self.smoothed_y)**2)
             
-        dx = (raw_x_px - self.last_x) / dt
-        dy = (raw_y_px - self.last_y) / dt
-        self.last_x, self.last_y = raw_x_px, raw_y_px
-
-        alpha_d = self.get_alpha(self.dcutoff, dt)
-        self.dx_ema = alpha_d * dx + (1 - alpha_d) * self.dx_ema
-        self.dy_ema = alpha_d * dy + (1 - alpha_d) * self.dy_ema
-        vel = math.sqrt(self.dx_ema**2 + self.dy_ema**2)
-
-        cutoff = self.min_cutoff + self.beta * vel
-        alpha = self.get_alpha(cutoff, dt)
-
-        user_alpha = min(max(alpha * (user_smoothing * 2.0), 0.01), 1.0)
-        blended_alpha = user_alpha * (intent.confidence ** 2) * env_penalty
-
-        target_x = blended_alpha * raw_x_px + (1 - blended_alpha) * self.smoothed_x
-        target_y = blended_alpha * raw_y_px + (1 - blended_alpha) * self.smoothed_y
-
-        raw_dist_px = math.sqrt((raw_x_px - self.smoothed_x)**2 + (raw_y_px - self.smoothed_y)**2)
-        
-        reason_not_moving = ""
-        if raw_dist_px >= self.deadzone_px:
-            self.smoothed_x = target_x
-            self.smoothed_y = target_y
-            self.is_stationary = False
-        else:
-            reason_not_moving = "BELOW_DEADZONE"
-            self.is_stationary = True
-
-        if self.is_stationary:
-            pred_x = self.smoothed_x
-            pred_y = self.smoothed_y
-        else:
-            vel_clamped = min(self.vel_cap, vel)
-            # Simple adaptive prediction
-            if vel_clamped < 100: pred_sec = 0.0
-            elif vel_clamped < 500: pred_sec = 0.008
-            elif vel_clamped < 1500: pred_sec = 0.015
-            else: pred_sec = 0.020
-            
-            pred_sec *= env_penalty
-            pred_x = self.smoothed_x + (self.dx_ema * pred_sec)
-            pred_y = self.smoothed_y + (self.dy_ema * pred_sec)
-            
-        # Session Cursor Lock: Freeze cursor strictly if session demands it
-        cursor_locked = intent.session is not None and intent.session.cursor_locked
-        if not cursor_locked:
-            if self.smoothed_x is not None:
-                self.last_still_x = self.smoothed_x
-                self.last_still_y = self.smoothed_y
-            self.locked_cursor_x = None
-            self.locked_cursor_y = None
-        else:
-            if self.locked_cursor_x is None:
-                self.locked_cursor_x = self.last_still_x if self.last_still_x is not None else self.smoothed_x
-                self.locked_cursor_y = self.last_still_y if self.last_still_y is not None else self.smoothed_y
-            pred_x = self.locked_cursor_x
-            pred_y = self.locked_cursor_y
+            reason_not_moving = ""
+            if raw_dist_px >= self.deadzone_px:
+                self.smoothed_x = target_x
+                self.smoothed_y = target_y
+                self.is_stationary = False
+            else:
+                reason_not_moving = "BELOW_DEADZONE"
+                self.is_stationary = True
+    
+            if self.is_stationary:
+                pred_x = self.smoothed_x
+                pred_y = self.smoothed_y
+            else:
+                vel_clamped = min(self.vel_cap, vel)
+                # Simple adaptive prediction
+                if vel_clamped < 100: pred_sec = 0.0
+                elif vel_clamped < 500: pred_sec = 0.008
+                elif vel_clamped < 1500: pred_sec = 0.015
+                else: pred_sec = 0.020
+                
+                pred_sec *= env_penalty
+                pred_x = self.smoothed_x + (self.dx_ema * pred_sec)
+                pred_y = self.smoothed_y + (self.dy_ema * pred_sec)
 
         pred_x = max(0, min(pred_x, screen_w - 1))
         pred_y = max(0, min(pred_y, screen_h - 1))
@@ -196,4 +215,10 @@ class MotionEngine:
         })
         
         interaction_id = getattr(intent.session, "interaction_id", "") if intent.session else ""
+        
+        # If we have a pending scroll command, return it and SUPPRESS the cursor move
+        if pending_scroll_command:
+            pending_scroll_command.interaction_id = interaction_id
+            return pending_scroll_command
+            
         return ActionCommand(CommandType.MOVE_CURSOR, pred_x, pred_y, interaction_id=interaction_id)

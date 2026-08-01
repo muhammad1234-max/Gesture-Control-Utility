@@ -29,6 +29,8 @@ class ValidatedTrackingData:
         self.left_click_score = raw_data.get("left_click_score", 0.0)
         self.right_click_score = raw_data.get("right_click_score", 0.0)
         self.conf_hist = raw_data.get("conf_hist", [])
+        self.screen_cursor_x = raw_data.get("screen_cursor_x", 0.0)
+        self.screen_cursor_y = raw_data.get("screen_cursor_y", 0.0)
         
         self.frame_quality = 0.0
         self.reliability_score = 0.0
@@ -53,6 +55,8 @@ class ValidatedTrackingData:
             "left_click_score": self.left_click_score,
             "right_click_score": self.right_click_score,
             "conf_hist": self.conf_hist,
+            "screen_cursor_x": self.screen_cursor_x,
+            "screen_cursor_y": self.screen_cursor_y,
             "env_penalty": self.env_penalty,
             "landmarks": self.landmarks,
             "frame_quality": self.frame_quality,
@@ -178,7 +182,7 @@ class ReliabilityEngine:
             out.frame_quality = reliability
             
         # 5. Save Valid Data State
-        if not out.has_hand or out.tracking_state == "DEGRADED_TRACKING":
+        if not out.has_hand:
             out.raw_x = self.last_valid_x
             out.raw_y = self.last_valid_y
             out.dist_i = self.last_valid_dist_i
@@ -186,6 +190,13 @@ class ReliabilityEngine:
             out.hand_scale = self.last_valid_scale
             out.left_click_score = 0.0
             out.right_click_score = 0.0
+        elif out.tracking_state == "DEGRADED_TRACKING":
+            out.raw_x = self.last_valid_x
+            out.raw_y = self.last_valid_y
+            out.dist_i = self.last_valid_dist_i
+            out.dist_m = self.last_valid_dist_m
+            out.hand_scale = self.last_valid_scale
+            # Design C: Preserve original gesture scores from GestureIntentRecognizer during DEGRADED_TRACKING
         else:
             if "raw_x" not in invalidated:
                 self.last_valid_x = out.raw_x
