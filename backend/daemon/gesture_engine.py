@@ -81,6 +81,10 @@ class ClickStateMachine:
         self.threshold_off = 0.30
         self.pre_engage_threshold = 0.40
         
+        self.FAST_CLICK_SCORE = 0.75
+        self.FAST_CLICK_ACCUMULATOR = 0.50
+        self.NORMAL_CLICK_ACCUMULATOR = 0.35
+        
         self.confidence_accumulator = 0.0
         self.HOLD_TIME_MS = 350.0
         self.DRAG_DIST_THRESHOLD = 0.12
@@ -123,13 +127,13 @@ class ClickStateMachine:
         old_name = state_names.get(self.state, str(self.state))
         new_name = state_names.get(new_state, str(new_state))
         
-        if new_state == ClickState.PINCH_STARTED and not self.interaction_id:
+        if new_state == ClickState.PINCH_STARTED and (not self.interaction_id or old_state == ClickState.COOLDOWN):
             self.interaction_id = f"clk_{uuid.uuid4().hex[:6]}"
             
         # =========================================================
         # InteractionSession Lifecycle & Event Queue Logic
         # =========================================================
-        if new_state == ClickState.PINCH_STARTED and old_state == ClickState.IDLE:
+        if new_state == ClickState.PINCH_STARTED and old_state in (ClickState.IDLE, ClickState.COOLDOWN):
             self.session = InteractionSession(interaction_id=self.interaction_id)
             if self.lock_manager:
                 self.lock_manager.acquire(LockReason.CLICK, self.pre_click_anchor_screen_x, self.pre_click_anchor_screen_y)
@@ -247,7 +251,7 @@ class ClickStateMachine:
 
         if self.state == ClickState.IDLE:
             if has_hand and click_score > self.pre_engage_threshold:
-                self.confidence_accumulator = 0.35
+                self.confidence_accumulator = self.FAST_CLICK_ACCUMULATOR if click_score >= self.FAST_CLICK_SCORE else self.NORMAL_CLICK_ACCUMULATOR
                 self.pre_click_anchor_x = raw_x
                 self.pre_click_anchor_y = raw_y
                 self.pre_click_anchor_screen_x = screen_x
@@ -264,7 +268,8 @@ class ClickStateMachine:
                     self._change_state(ClickState.IDLE, t_curr, "Hand tracking lost")
                 elif click_score > self.threshold_on:
                     self.low_confidence_frames = 0
-                    self.confidence_accumulator += 0.35
+                    acc_step = self.FAST_CLICK_ACCUMULATOR if click_score >= self.FAST_CLICK_SCORE else self.NORMAL_CLICK_ACCUMULATOR
+                    self.confidence_accumulator += acc_step
                     if self.confidence_accumulator >= 1.0:
                         self.press_start_time = t_curr
                         self.press_anchor_x = raw_x
@@ -284,7 +289,8 @@ class ClickStateMachine:
                     self._change_state(ClickState.IDLE, t_curr, "Hand tracking lost")
                 elif click_score > self.threshold_on:
                     self.low_confidence_frames = 0
-                    self.confidence_accumulator += 0.35
+                    acc_step = self.FAST_CLICK_ACCUMULATOR if click_score >= self.FAST_CLICK_SCORE else self.NORMAL_CLICK_ACCUMULATOR
+                    self.confidence_accumulator += acc_step
                     if self.confidence_accumulator >= 1.0:
                         self.press_start_time = t_curr
                         self.press_anchor_x = raw_x
@@ -339,7 +345,18 @@ class ClickStateMachine:
             self._change_state(ClickState.COOLDOWN, t_curr, "Click up executed")
 
         elif self.state == ClickState.COOLDOWN:
-            if elapsed_ms >= self.COOLDOWN_MS:
+            if has_hand and not self.is_pressed and click_score > self.threshold_on:
+                self.confidence_accumulator = self.FAST_CLICK_ACCUMULATOR if click_score >= self.FAST_CLICK_SCORE else self.NORMAL_CLICK_ACCUMULATOR
+                self.pre_click_anchor_x = raw_x
+                self.pre_click_anchor_y = raw_y
+                self.pre_click_anchor_screen_x = screen_x
+                self.pre_click_anchor_screen_y = screen_y
+                self.locked_palm_x = palm_x
+                self.locked_palm_y = palm_y
+                self.pre_click_drift = 0.0
+                self.low_confidence_frames = 0
+                self._change_state(ClickState.PINCH_STARTED, t_curr, "Geometry score > 0.60 during COOLDOWN")
+            elif elapsed_ms >= self.COOLDOWN_MS:
                 self._change_state(ClickState.IDLE, t_curr, "Cooldown finished")
 
 
